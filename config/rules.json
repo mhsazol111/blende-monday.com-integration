@@ -1,0 +1,50 @@
+{
+  "rules": [
+    {
+      "id": "np-intake-bluesheet-done",
+      "enabled": true,
+      "boardId": 18403436566,
+      "scope": {
+        "groupId": "group_mm1q43sd"
+      },
+      "trigger": {
+        "type": "subitem_checked",
+        "columnId": "status",
+        "label": "Done",
+        "subitemName": "NP intake and blue sheet"
+      },
+      "actions": [
+        {
+          "type": "slack",
+          "when": {
+            "mode": "immediate"
+          },
+          "text": ":white_check_mark: *{{item.name}}* — \"NP intake and blue sheet\" marked *Done* in {{group.title}} (item {{item.id}})"
+        }
+      ]
+    },
+    {
+      "id": "test-test",
+      "enabled": true,
+      "boardId": 18403436566,
+      "scope": {
+        "groupId": "group_title"
+      },
+      "trigger": {
+        "type": "subitem_checked",
+        "columnId": "status",
+        "label": "Done",
+        "subitemName": "Receive NP paperwork"
+      },
+      "actions": [
+        {
+          "type": "slack",
+          "when": {
+            "mode": "immediate"
+          },
+          "text": "Received NP Paperwork from *{{item.name}}*"
+        }
+      ]
+    }
+  ]
+}

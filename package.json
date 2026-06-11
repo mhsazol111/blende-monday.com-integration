@@ -1,0 +1,35 @@
+{
+  "name": "monday-automation-service",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Config-driven monday.com notification & automation engine (webhooks + scheduler).",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "discover": "tsx src/scripts/discover.ts",
+    "test:ingress": "tsx src/scripts/test-ingress.ts",
+    "test:engine": "tsx src/scripts/test-engine.ts",
+    "test:queue": "tsx src/scripts/test-queue.ts",
+    "test:polish": "tsx src/scripts/test-polish.ts",
+    "test:cutover": "tsx src/scripts/test-cutover.ts",
+    "test:admin": "RULES_PATH=./.test-rules.json tsx src/scripts/test-admin.ts",
+    "test": "npm run test:ingress && npm run test:engine && npm run test:queue && npm run test:polish && npm run test:cutover && npm run test:admin"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "fastify": "^5.8.5",
+    "nodemailer": "^8.0.11"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/nodemailer": "^8.0.1",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}

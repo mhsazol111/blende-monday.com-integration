@@ -1,0 +1,19 @@
+node_modules/
+dist/
+*.log
+
+# Secrets & local config
+.env
+.env.local
+.env.*.local
+
+# Local SQLite database files
+*.sqlite
+*.sqlite3
+*.db
+data/
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/

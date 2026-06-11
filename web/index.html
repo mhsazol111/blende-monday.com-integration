@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>monday automation — rule configurator</title>
+    <style>
+      :root { --bd: #d8dce5; --bg: #f6f7fb; --accent: #0073ea; --muted: #676879; --danger: #d83a52; }
+      * { box-sizing: border-box; }
+      body { margin: 0; font: 14px/1.45 -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; color: #323338; background: var(--bg); }
+      header { background: #fff; border-bottom: 1px solid var(--bd); padding: 14px 22px; display: flex; align-items: baseline; gap: 12px; }
+      header h1 { font-size: 17px; margin: 0; }
+      header .sub { color: var(--muted); font-size: 12px; }
+      main { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; padding: 18px 22px; align-items: start; }
+      .card { background: #fff; border: 1px solid var(--bd); border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+      .card h2 { font-size: 14px; margin: 0 0 12px; }
+      label { display: block; font-weight: 600; font-size: 12px; margin: 10px 0 4px; }
+      input, select, textarea { width: 100%; padding: 7px 9px; border: 1px solid var(--bd); border-radius: 6px; font: inherit; background: #fff; }
+      textarea { min-height: 320px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+      button { cursor: pointer; border: 1px solid var(--bd); background: #fff; border-radius: 6px; padding: 7px 12px; font: inherit; font-weight: 600; }
+      button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+      button.link { border: none; background: none; color: var(--accent); padding: 2px 4px; }
+      button.danger { color: var(--danger); border: none; background: none; }
+      .row { display: flex; gap: 8px; align-items: flex-end; }
+      .row > * { flex: 1; }
+      .row > button { flex: 0 0 auto; }
+      .subform { border: 1px dashed var(--bd); border-radius: 6px; padding: 10px; margin-top: 8px; background: #fafbfc; }
+      .hint { color: var(--muted); font-size: 11px; font-weight: 400; }
+      .pill { display: inline-block; font-size: 11px; background: #eceef4; border-radius: 10px; padding: 1px 8px; margin-left: 6px; }
+      .rule-item { border: 1px solid var(--bd); border-radius: 6px; padding: 8px 10px; margin-bottom: 8px; display: flex; justify-content: space-between; gap: 8px; }
+      .rule-item code { font-size: 11px; color: var(--muted); }
+      #status { font-size: 12px; }
+      .ok { color: #258750; }
+      .err { color: var(--danger); white-space: pre-wrap; }
+      .hidden { display: none; }
+      @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>monday automation</h1>
+      <span class="sub">rule configurator — pick from live board data, no IDs to copy</span>
+    </header>
+
+    <main>
+      <div class="col">
+        <div class="card">
+          <h2>1 · Load a board</h2>
+          <div class="row">
+            <div>
+              <label>Board ID</label>
+              <input id="boardId" placeholder="e.g. 18403436566" />
+            </div>
+            <button class="primary" id="loadBoard">Load</button>
+          </div>
+          <p id="boardStatus" class="hint">Not loaded.</p>
+        </div>
+
+        <div class="card" id="builderCard" style="opacity:.5; pointer-events:none">
+          <h2>2 · Build a rule</h2>
+
+          <label>Rule ID</label>
+          <input id="ruleId" placeholder="unique-rule-id" />
+
+          <label><input type="checkbox" id="ruleEnabled" checked style="width:auto" /> Enabled</label>
+
+          <label>Group (scope)</label>
+          <select id="scopeGroup"></select>
+
+          <label>Trigger</label>
+          <select id="triggerType"></select>
+          <div id="triggerParams" class="subform"></div>
+
+          <label>Conditions <span class="hint">(all must match)</span></label>
+          <div id="conditions"></div>
+          <button class="link" id="addCondition">+ add condition</button>
+
+          <label>Actions</label>
+          <div id="actions"></div>
+          <button class="link" id="addAction">+ add action</button>
+
+          <div style="margin-top:14px">
+            <button class="primary" id="addRule">Add rule to ruleset →</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="col">
+        <div class="card">
+          <h2>Current ruleset <span class="pill" id="ruleCount">0</span></h2>
+          <div id="ruleList"></div>
+        </div>
+
+        <div class="card">
+          <h2>Ruleset JSON <span class="hint">(editable — source of truth)</span></h2>
+          <textarea id="json"></textarea>
+          <div class="row" style="margin-top:10px">
+            <button id="applyJson">Apply JSON ↑</button>
+            <button class="primary" id="save">Save to server</button>
+          </div>
+          <p id="status" class="hint">&nbsp;</p>
+        </div>
+      </div>
+    </main>
+
+    <script src="/app.js"></script>
+  </body>
+</html>
