@@ -85,7 +85,13 @@ do not break it.
   boot-safe (no crash when the rules file is absent — fresh deploys start with 0 rules); debug route
   `GET /api/last-events` (last 20 raw payloads) added for payload reconciliation. See §11 for Coolify.
 
-**All offline suites pass: `npm test` → 58 checks (ingress 10, engine 12, queue 14, polish 6,
+- **Multi-subitem trigger added (2026-06-12):** `all_subitems_checked` (trigger + condition combo
+  for "subitem A AND subitem B done" used to silently miss when the trigger subitem was completed
+  before the condition subitem — only the trigger subitem re-evaluates the rule). The new trigger
+  fires once when the LAST of `subitemNames[]` reaches the label, in any order, ignoring unrelated
+  subitems. Engine: `allSubitemsAtLabel`; UI: multi-subitem picker.
+
+**All offline suites pass: `npm test` → 61 checks (ingress 10, engine 15, queue 14, polish 6,
 cutover 9, admin 7).** The legacy PHP plugin is still untouched and live.
 
 **Configurator:** run `npm run dev` (or `npm start`) and open `http://localhost:<PORT>/`. If
@@ -134,6 +140,7 @@ A rule = one **trigger** + zero-or-more AND **conditions** + one-or-more **actio
 | `item_entered_group` | item created in / moved into group X | instant |
 | `item_left_group` | item moved out of group X | instant |
 | `subitem_checked` | a specific subitem's checkbox/status is checked | instant |
+| `all_subitems_checked` | fires once when the LAST of `subitemNames[]` reaches `label` (order-independent) | instant |
 | `status_changed_to` | a status column becomes a specific label | instant |
 | `item_moved` | item moved to another board/workspace (workspace move = board move) | instant |
 | `item_in_group_for_days` | item has sat in group X for N days | **timed** |

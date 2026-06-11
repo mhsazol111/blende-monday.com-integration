@@ -173,6 +173,43 @@ async function main() {
     check('subitem_checked fires despite subitem-board id', r.matched === 1 && slacks.length === 1);
   }
 
+  // 5c) all_subitems_checked: fires only when the LAST of the set is Done (order-independent).
+  {
+    const SUBITEM_BOARD = 18403436575;
+    const rules: Rule[] = [
+      {
+        id: 'both-xrays',
+        enabled: true,
+        boardId: BOARD,
+        scope: { groupId: GROUP },
+        trigger: { type: 'all_subitems_checked', columnId: 'status', label: 'Done', subitemNames: ['Request x-rays', 'Receive x-rays'] },
+        actions: [{ type: 'slack', when: { mode: 'immediate' }, text: 'both x-rays done' }],
+      },
+    ];
+    const doneCols = { status: { text: 'Done', value: null, type: 'color' } };
+    const notCols = { status: { text: '', value: null, type: 'color' } };
+    const sub = (name: string, done: boolean) => ({ id: 1, name, columns: done ? doneCols : notCols });
+    const evtFor = (name: string): NormalizedEvent => ({
+      kind: 'subitem_changed', boardId: SUBITEM_BOARD, subitemId: 1, parentItemId: 100,
+      columnId: 'status', label: 'Done', value: null, raw: { pulseName: name },
+    });
+
+    // First x-ray done, second not yet → no fire.
+    const eng1 = makeEngine(rules, makeItem({ subitems: [sub('Request x-rays', true), sub('Receive x-rays', false)] }));
+    const r1 = await eng1.engine.handleEvent(evtFor('Request x-rays'));
+    check('all_subitems_checked: not all done → no fire', r1.matched === 0 && eng1.slacks.length === 0);
+
+    // Now both done, second one is the change → fires once.
+    const eng2 = makeEngine(rules, makeItem({ subitems: [sub('Request x-rays', true), sub('Receive x-rays', true)] }));
+    const r2 = await eng2.engine.handleEvent(evtFor('Receive x-rays'));
+    check('all_subitems_checked: last one done → fires', r2.matched === 1 && eng2.slacks.length === 1);
+
+    // An unrelated subitem completing does NOT fire (not in the set).
+    const eng3 = makeEngine(rules, makeItem({ subitems: [sub('Request x-rays', true), sub('Receive x-rays', true)] }));
+    const r3 = await eng3.engine.handleEvent(evtFor('Some other subitem'));
+    check('all_subitems_checked: unrelated subitem → no fire', r3.matched === 0 && eng3.slacks.length === 0);
+  }
+
   // 6) condition gating: status_is_not blocks when item is Done.
   {
     const gated: Rule[] = [

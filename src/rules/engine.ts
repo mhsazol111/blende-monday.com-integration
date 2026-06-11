@@ -95,6 +95,7 @@ export class RulesEngine {
       if (rule.boardId !== item.boardId) continue; // parent board for subitem events
       if (!scopeMatches(rule, item)) continue;
       if (!triggerDetailsMatch(rule.trigger, event)) continue;
+      if (rule.trigger.type === 'all_subitems_checked' && !allSubitemsAtLabel(item, rule.trigger)) continue;
       if (!conditionsPass(rule.conditions ?? [], item)) continue;
 
       result.matched++;
@@ -281,6 +282,7 @@ function triggerKindMatches(trigger: Trigger, event: NormalizedEvent): boolean {
     case 'status_changed_to':
       return event.kind === 'status_changed';
     case 'subitem_checked':
+    case 'all_subitems_checked':
       return event.kind === 'subitem_changed';
     case 'item_moved':
       return event.kind === 'item_moved_board';
@@ -301,7 +303,28 @@ function triggerDetailsMatch(trigger: Trigger, event: NormalizedEvent): boolean 
     }
     return true;
   }
+  if (trigger.type === 'all_subitems_checked' && event.kind === 'subitem_changed') {
+    // Only react if the changed subitem is one of the tracked ones reaching the
+    // label; the "all reached it" check happens after hydration (allSubitemsAtLabel).
+    if (event.columnId !== trigger.columnId || event.label !== trigger.label) return false;
+    const changed = String((event.raw as any).pulseName ?? '').toLowerCase();
+    return trigger.subitemNames.some((n) => n.toLowerCase() === changed);
+  }
   return true;
+}
+
+/** True when every named subitem currently shows `label` on the parent item. */
+function allSubitemsAtLabel(
+  item: ItemContext,
+  trigger: Extract<Trigger, { type: 'all_subitems_checked' }>,
+): boolean {
+  return trigger.subitemNames.every((name) =>
+    item.subitems.some(
+      (s) =>
+        s.name.toLowerCase() === name.toLowerCase() &&
+        (s.columns[trigger.columnId]?.text ?? '') === trigger.label,
+    ),
+  );
 }
 
 function scopeMatches(rule: Rule, item: ItemContext): boolean {

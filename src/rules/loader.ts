@@ -72,6 +72,10 @@ export function validateRule(r: Rule): string | null {
   if (!r.id) return 'missing id';
   if (typeof r.boardId !== 'number') return 'missing/invalid boardId';
   if (!r.trigger?.type) return 'missing trigger.type';
+  if (r.trigger.type === 'all_subitems_checked') {
+    const names = (r.trigger as any).subitemNames;
+    if (!Array.isArray(names) || names.length === 0) return 'all_subitems_checked needs subitemNames';
+  }
   if (!r.scope || (!r.scope.groupId && !r.scope.groupTitleContains)) {
     return 'scope must set groupId or groupTitleContains';
   }

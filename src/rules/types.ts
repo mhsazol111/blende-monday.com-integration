@@ -17,6 +17,8 @@ export type Trigger =
   | { type: 'item_moved' }
   // For our boards "checked" = a subitem's status column reaching `label` (e.g. "Done").
   | { type: 'subitem_checked'; columnId: string; label: string; subitemName?: string }
+  // Fires once when the LAST of `subitemNames` reaches `label` — order-independent.
+  | { type: 'all_subitems_checked'; columnId: string; label: string; subitemNames: string[] }
   // Timed — scheduled at group entry; dispatched by the worker (Phase 4).
   | { type: 'item_in_group_for_days'; days: number; repeatEveryDays?: number };
 

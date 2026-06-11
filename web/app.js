@@ -85,8 +85,32 @@ const TRIGGERS = [
   { value: 'item_moved', label: 'Item moved to another board/workspace' },
   { value: 'status_changed_to', label: 'Status column changed to…' },
   { value: 'subitem_checked', label: 'Subitem checked (status →)' },
+  { value: 'all_subitems_checked', label: 'All of these subitems checked (any order)' },
   { value: 'item_in_group_for_days', label: 'Item in group for N days' },
 ];
+
+/** Multiple subitem pickers with add/remove; serializes to a names array. */
+function multiSubitemPicker() {
+  const rows = [];
+  const list = el('div');
+  const add = () => {
+    const picker = subitemNamePicker();
+    const remove = el('button', {
+      class: 'danger',
+      text: '✕',
+      onclick: (e) => { e.preventDefault(); const i = rows.indexOf(entry); if (i >= 0) { rows.splice(i, 1); row.remove(); } },
+    });
+    const row = el('div', { class: 'row' }, [picker.node, remove]);
+    const entry = { row, serialize: picker.serialize };
+    rows.push(entry);
+    list.appendChild(row);
+  };
+  add();
+  add(); // start with two rows
+  const addBtn = el('button', { class: 'link', text: '+ add subitem', onclick: (e) => { e.preventDefault(); add(); } });
+  const node = el('div', {}, [list, addBtn]);
+  return { node, serialize: () => rows.map((r) => r.serialize()).filter(Boolean) };
+}
 let triggerSerialize = () => ({ type: 'item_entered_group' });
 
 function renderTriggerParams() {
@@ -109,6 +133,17 @@ function renderTriggerParams() {
       const p = pair.serialize();
       const nm = picker.serialize();
       return nm ? { type, ...p, subitemName: nm } : { type, ...p };
+    };
+  } else if (type === 'all_subitems_checked') {
+    const pair = columnLabelPair(byType(subCols(), ['status', 'color']));
+    const multi = multiSubitemPicker();
+    box.appendChild(el('label', { text: 'Subitems — fires once when ALL reach the status (any order)' }));
+    box.appendChild(multi.node);
+    box.appendChild(el('label', { text: 'Status column → label (e.g. Done)' }));
+    box.appendChild(pair.node);
+    triggerSerialize = () => {
+      const p = pair.serialize();
+      return { type, columnId: p.columnId, label: p.label, subitemNames: multi.serialize() };
     };
   } else if (type === 'item_in_group_for_days') {
     const days = el('input', { type: 'number', min: '1', value: '7' });
