@@ -13,7 +13,11 @@ export type ActionWhen =
 export type Trigger =
   | { type: 'item_entered_group' }
   | { type: 'item_left_group' }
+  // Legacy: superseded by item_column_changed (kept so old saved rules still run).
   | { type: 'status_changed_to'; columnId: string; label: string }
+  // Any item column changed. `value` omitted → fires on ANY change to the column;
+  // set → fires only when the column's text becomes `value` (status = its label).
+  | { type: 'item_column_changed'; columnId: string; value?: string }
   // For our boards "checked" = a subitem's status column reaching `label` (e.g. "Done").
   | { type: 'subitem_checked'; columnId: string; label: string; subitemName?: string }
   // Fires once when the LAST of `subitemNames` reaches `label` — order-independent.

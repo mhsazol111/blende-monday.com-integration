@@ -110,6 +110,7 @@ export class RulesEngine {
       if (!ruleScopeMatches(rule, item, event)) continue;
       if (!triggerDetailsMatch(rule.trigger, event)) continue;
       if (rule.trigger.type === 'all_subitems_checked' && !allSubitemsAtLabel(item, rule.trigger)) continue;
+      if (rule.trigger.type === 'item_column_changed' && !itemColumnMatches(item, rule.trigger)) continue;
       if (!conditionsPass(rule.conditions ?? [], item, evalCtx)) continue;
 
       result.matched++;
@@ -354,6 +355,9 @@ function triggerKindMatches(trigger: Trigger, event: NormalizedEvent): boolean {
       return event.kind === 'item_left_group' || (event.kind === 'item_entered_group' && event.reason === 'moved');
     case 'status_changed_to':
       return event.kind === 'status_changed';
+    case 'item_column_changed':
+      // Any item column: status changes normalize to status_changed, others to column_changed.
+      return event.kind === 'status_changed' || event.kind === 'column_changed';
     case 'subitem_checked':
     case 'all_subitems_checked':
       return event.kind === 'subitem_changed';
@@ -365,6 +369,14 @@ function triggerKindMatches(trigger: Trigger, event: NormalizedEvent): boolean {
 function triggerDetailsMatch(trigger: Trigger, event: NormalizedEvent): boolean {
   if (trigger.type === 'status_changed_to' && event.kind === 'status_changed') {
     return event.columnId === trigger.columnId && event.label === trigger.label;
+  }
+  if (
+    trigger.type === 'item_column_changed' &&
+    (event.kind === 'status_changed' || event.kind === 'column_changed')
+  ) {
+    // The CHANGED column must be the target one; the value (if any) is checked
+    // post-hydration against the column's current text (itemColumnMatches).
+    return event.columnId === trigger.columnId;
   }
   if (trigger.type === 'subitem_checked' && event.kind === 'subitem_changed') {
     if (event.columnId !== trigger.columnId || event.label !== trigger.label) return false;
@@ -382,6 +394,19 @@ function triggerDetailsMatch(trigger: Trigger, event: NormalizedEvent): boolean 
     return trigger.subitemNames.some((n) => n.toLowerCase() === changed);
   }
   return true;
+}
+
+/**
+ * For `item_column_changed`: with no `value`, any change to the column matches;
+ * with a `value`, the column's current text must equal it (case-insensitive).
+ */
+function itemColumnMatches(
+  item: ItemContext,
+  trigger: Extract<Trigger, { type: 'item_column_changed' }>,
+): boolean {
+  if (!trigger.value) return true; // "any change" mode
+  const text = item.columns[trigger.columnId]?.text ?? '';
+  return text.trim().toLowerCase() === trigger.value.trim().toLowerCase();
 }
 
 /** True when every named subitem currently shows `label` on the parent item. */

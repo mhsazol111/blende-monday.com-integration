@@ -400,6 +400,33 @@ async function main() {
     check('item_left_group does not fire on create', r.matched === 0 && e.slacks.length === 0);
   }
 
+  // 14) item_column_changed: any column, specific value or "any change".
+  {
+    const colEvt = (columnId: string): NormalizedEvent => ({ kind: 'column_changed', boardId: BOARD, itemId: 100, columnId, columnType: 'text', value: null, raw: {} });
+    const rule = (over: any): Rule => ({ id: 'r', enabled: true, boardId: BOARD, scope: { groupId: GROUP }, trigger: { type: 'item_column_changed', ...over }, actions: [{ type: 'slack', when: { mode: 'immediate' }, text: 'changed' }] });
+
+    let e = makeEngine([rule({ columnId: 'text_x', value: 'Approved' })], makeItem({ columns: { text_x: { text: 'Approved', value: null, type: 'text' } } }));
+    let r = await e.engine.handleEvent(colEvt('text_x'));
+    check('item_column_changed fires when text column matches value', r.matched === 1 && e.slacks.length === 1);
+
+    e = makeEngine([rule({ columnId: 'text_x', value: 'Approved' })], makeItem({ columns: { text_x: { text: 'Pending', value: null, type: 'text' } } }));
+    r = await e.engine.handleEvent(colEvt('text_x'));
+    check('item_column_changed skips when value differs', r.matched === 0);
+
+    e = makeEngine([rule({ columnId: 'text_x' })], makeItem({ columns: { text_x: { text: 'Whatever', value: null, type: 'text' } } }));
+    r = await e.engine.handleEvent(colEvt('text_x'));
+    check('item_column_changed "any change" fires regardless of value', r.matched === 1);
+
+    e = makeEngine([rule({ columnId: 'text_x' })], makeItem({ columns: { text_x: { text: 'x', value: null, type: 'text' }, other: { text: 'y', value: null, type: 'text' } } }));
+    r = await e.engine.handleEvent(colEvt('other'));
+    check('item_column_changed ignores a different column changing', r.matched === 0);
+
+    const statusEvt: NormalizedEvent = { kind: 'status_changed', boardId: BOARD, itemId: 100, columnId: 'status', label: 'Done', raw: {} };
+    e = makeEngine([rule({ columnId: 'status', value: 'Done' })], makeItem({ columns: { status: { text: 'Done', value: null, type: 'color' } } }));
+    r = await e.engine.handleEvent(statusEvt);
+    check('item_column_changed works for status columns too', r.matched === 1 && e.slacks.length === 1);
+  }
+
   console.log(`\n${passed} checks passed.`);
 }
 

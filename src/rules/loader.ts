@@ -76,6 +76,9 @@ export function validateRule(r: Rule): string | null {
     const names = (r.trigger as any).subitemNames;
     if (!Array.isArray(names) || names.length === 0) return 'all_subitems_checked needs subitemNames';
   }
+  if (r.trigger.type === 'item_column_changed' && !(r.trigger as any).columnId) {
+    return 'item_column_changed needs columnId';
+  }
   if (!r.scope || (!r.scope.groupId && !r.scope.groupTitleContains)) {
     return 'scope must set groupId or groupTitleContains';
   }

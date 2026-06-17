@@ -168,7 +168,15 @@ both `item_entered_group`(B) and `item_left_group`(A) rules. (Immediate actions 
 a *scheduled* `item_left_group` action would be cancelled by the auto-clear-on-leave in
 `onEnteredGroup` — noted, not addressed.)
 
-**All offline suites pass: `npm test` → 82 checks (ingress 10, engine 29, queue 21, polish 6,
+**`item_column_changed` trigger (2026-06-17):** generalized the status-only `status_changed_to` into
+a trigger for ANY item column. `value` omitted → fires on any change to the column; `value` set →
+fires when the column's hydrated text equals it (case-insensitive; status uses its label). Engine:
+`triggerKindMatches` consumes both `status_changed` and `column_changed`; `triggerDetailsMatch`
+matches the changed columnId; post-hydration `itemColumnMatches` checks the value. The single
+registered `change_column_value` webhook already delivers all column types. Legacy `status_changed_to`
+still runs and is migrated to `item_column_changed` when edited in the UI.
+
+**All offline suites pass: `npm test` → 87 checks (ingress 10, engine 34, queue 21, polish 6,
 cutover 9, admin 7).** The legacy PHP plugin is still untouched and live.
 
 **Configurator:** run `npm run dev` (or `npm start`) and open `http://localhost:<PORT>/`. If
@@ -218,8 +226,12 @@ A rule = one **trigger** + zero-or-more AND **conditions** + one-or-more **actio
 | `item_left_group` | item moved out of group X | instant |
 | `subitem_checked` | a specific subitem's checkbox/status is checked | instant |
 | `all_subitems_checked` | fires once when the LAST of `subitemNames[]` reaches `label` (order-independent) | instant |
-| `status_changed_to` | a status column becomes a specific label | instant |
+| `item_column_changed` | any item column changes — to a specific value, or "any change" if no value | instant |
 | `item_in_group_for_days` | item has sat in group X for N days | **timed** |
+
+> `status_changed_to` is the legacy status-only trigger — replaced in the UI by `item_column_changed`
+> (which subsumes it). The engine still recognizes old `status_changed_to` rules; the configurator
+> migrates them to `item_column_changed` on edit.
 
 > Removed (2026-06-17): the `item_moved` (cross-board/workspace) trigger — monday has no board-move
 > webhook in `WebhookEventType`, so it could never fire. Dropped from the engine, types,

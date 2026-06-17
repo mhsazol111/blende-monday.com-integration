@@ -160,7 +160,7 @@ function columnLabelPair(cols, init) {
 const TRIGGERS = [
   { value: 'item_entered_group', label: 'Item entered the group' },
   { value: 'item_left_group', label: 'Item left the group' },
-  { value: 'status_changed_to', label: 'Status column changed to…' },
+  { value: 'item_column_changed', label: 'Item column changed to…' },
   { value: 'subitem_checked', label: 'Subitem set (status →)' },
   { value: 'all_subitems_checked', label: 'All of these subitems set (any order)' },
   { value: 'item_in_group_for_days', label: 'Item in group for N days' },
@@ -195,11 +195,45 @@ function renderTriggerParams(init) {
   const i = init && init.type === type ? init : null; // only prefill matching type
   const box = $('triggerParams');
   box.innerHTML = '';
-  if (type === 'status_changed_to') {
-    const pair = columnLabelPair(byType(boardCols(), ['status', 'color']), i);
-    box.appendChild(el('span', { class: 'hint', text: 'Status column → label' }));
-    box.appendChild(pair.node);
-    triggerSerialize = () => ({ type, ...pair.serialize() });
+  if (type === 'item_column_changed') {
+    // Any board column + either "Any change" or a specific value (status → label dropdown).
+    const col = select([{ value: '', label: '— column —' }, ...colOptions(boardCols())]);
+    if (i?.columnId) col.value = i.columnId;
+    const modeSel = select([{ value: 'any', label: 'Any change' }, { value: 'value', label: 'A specific value' }]);
+    if (i && i.value) modeSel.value = 'value';
+    const valWrap = el('div');
+    let getValue = () => '';
+    let initVal = i?.value;
+    const renderVal = () => {
+      valWrap.innerHTML = '';
+      if (modeSel.value === 'any') { getValue = () => ''; return; }
+      const c = boardCols().find((x) => x.id === col.value);
+      if (c && (c.type === 'status' || c.type === 'color') && c.labels) {
+        const sel = select([{ value: '', label: '— label —' }, ...c.labels.map((l) => ({ value: l.label, label: l.label }))]);
+        if (initVal) sel.value = initVal;
+        valWrap.appendChild(sel);
+        getValue = () => sel.value;
+      } else {
+        const inp = el('input', { placeholder: 'value to match (the column’s text)', value: initVal || '' });
+        valWrap.appendChild(inp);
+        getValue = () => inp.value;
+      }
+      initVal = '';
+    };
+    col.addEventListener('change', renderVal);
+    modeSel.addEventListener('change', renderVal);
+    renderVal();
+    box.appendChild(el('label', { text: 'Column' }));
+    box.appendChild(col);
+    box.appendChild(el('label', { text: 'Fires on' }));
+    box.appendChild(modeSel);
+    box.appendChild(valWrap);
+    triggerSerialize = () => {
+      const t = { type, columnId: col.value };
+      const v = getValue();
+      if (modeSel.value === 'value' && v) t.value = v;
+      return t;
+    };
   } else if (type === 'subitem_checked') {
     const pair = columnLabelPair(byType(subCols(), ['status', 'color']), i);
     const picker = subitemNamePicker(i?.subitemName);
@@ -551,9 +585,12 @@ function loadRuleIntoBuilder(rule) {
   $('ruleEnabled').checked = rule.enabled !== false;
   $('scopeGroup').value = rule.scope?.groupId || '';
 
-  // Trigger: set the type, then render its params prefilled.
-  $('triggerType').value = rule.trigger?.type || TRIGGERS[0].value;
-  renderTriggerParams(rule.trigger || {});
+  // Trigger: set the type, then render its params prefilled. Migrate legacy
+  // status_changed_to rules into the unified item_column_changed on edit.
+  let trig = rule.trigger || {};
+  if (trig.type === 'status_changed_to') trig = { type: 'item_column_changed', columnId: trig.columnId, value: trig.label };
+  $('triggerType').value = trig.type || TRIGGERS[0].value;
+  renderTriggerParams(trig);
 
   // Conditions: rebuild rows from the saved list.
   conditionRows.length = 0;
