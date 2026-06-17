@@ -71,14 +71,6 @@ export function normalizeEvent(rawEvent: Record<string, unknown>): NormalizedEve
         groupId: str(e.destGroupId ?? e.groupId ?? e.group_id) ?? '',
         reason: 'moved',
       };
-
-    case 'move_pulse_into_board':
-      return {
-        ...base,
-        kind: 'item_moved_board',
-        itemId,
-        toBoardId: num(e.destBoardId ?? e.toBoardId),
-      };
   }
 
   if (COLUMN_CHANGE_TYPES.has(type)) {

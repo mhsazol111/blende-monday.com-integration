@@ -62,13 +62,6 @@ export interface SubitemChangedEvent extends BaseEvent {
   value: unknown;
 }
 
-/** Item moved to another board (workspace moves surface this way). */
-export interface ItemMovedBoardEvent extends BaseEvent {
-  kind: 'item_moved_board';
-  itemId: number;
-  toBoardId?: number;
-}
-
 /** Anything we don't yet map — logged so we can learn real payload shapes. */
 export interface UnknownEvent extends BaseEvent {
   kind: 'unknown';
@@ -81,5 +74,4 @@ export type NormalizedEvent =
   | StatusChangedEvent
   | ColumnChangedEvent
   | SubitemChangedEvent
-  | ItemMovedBoardEvent
   | UnknownEvent;

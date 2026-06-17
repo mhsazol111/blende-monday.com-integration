@@ -22,7 +22,6 @@ import { mondayGraphql } from './client.js';
  *  - item_moved_to_any_group   → item moved between groups(item_entered_group / item_left_group)
  *  - change_column_value       → any column changed      (status_changed_to + column_* conditions)
  *  - change_subitem_column_value → a subitem column changed (subitem_checked / all_subitems_checked)
- *  - move_item_to_board        → item moved to another board/workspace (item_moved)
  *
  * IMPORTANT: these are monday's **WebhookEventType registration** names, which
  * differ from the payload `type` strings the normalizer reads (e.g. you register
@@ -35,13 +34,15 @@ import { mondayGraphql } from './client.js';
  * UUIDs, so the engine's resend-dedupe couldn't collapse them → double sends).
  * The `item_in_group_for_days` trigger needs no webhook — it's armed at group
  * entry and fired by the worker.
+ *
+ * Note: monday has no board-move webhook in WebhookEventType (verified by schema
+ * introspection), so there is intentionally no cross-board "item moved" trigger.
  */
 export const WEBHOOK_EVENTS = [
   'create_item',
   'item_moved_to_any_group',
   'change_column_value',
   'change_subitem_column_value',
-  'move_item_to_board',
 ] as const;
 
 export type WebhookEvent = (typeof WEBHOOK_EVENTS)[number];
@@ -150,7 +151,9 @@ export async function reconcileWebhooks(
     try {
       created.push(await createWebhook(boardId, url, event));
     } catch (err: any) {
-      failed.push({ event, error: err?.message ?? 'create failed' });
+      // Surface monday's real reason (in `details`), not just "GraphQL error".
+      const detail = err?.details ? ` — ${JSON.stringify(err.details)}` : '';
+      failed.push({ event, error: `${err?.message ?? 'create failed'}${detail}` });
     }
   }
 

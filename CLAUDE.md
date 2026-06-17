@@ -97,18 +97,25 @@ over a managed event set), admin routes `GET /api/webhooks`, `POST /api/webhooks
 `DELETE /api/webhooks/:id` (`src/web/admin.ts`), a "Connect this board" card in the UI, and a
 debugging CLI `npm run webhooks -- [list|register|delete]` (`src/scripts/webhooks.ts`).
   - **Managed registration events** (WebhookEventType names, NOT payload `type` names):
-    `create_item`, `item_moved_to_any_group`, `change_column_value`, `change_subitem_column_value`,
-    `move_item_to_board`. These cover every trigger; `item_in_group_for_days` needs no webhook.
+    `create_item`, `item_moved_to_any_group`, `change_column_value`, `change_subitem_column_value`.
+    `item_in_group_for_days` needs no webhook (worker-driven). **monday has NO board-move webhook**
+    (verified via `__type(name:"WebhookEventType")` introspection) — so the `item_moved`
+    cross-board trigger can't be webhook-driven and is excluded from the managed set + flagged in
+    the UI. (An earlier draft wrongly included `move_item_to_board`, which always failed to create.)
+  - **Registration requires a public URL monday can reach** — registering from `http://localhost`
+    fails (`monday GraphQL error`). Register against the deployed HTTPS URL (set `PUBLIC_URL` or call
+    the API from the deployed instance).
   - `register` is idempotent (reconciles to one webhook per event) and per-event resilient (an
     unsupported event lands in `failed`, the rest still register). The monday API does not return a
     webhook's URL, so reconcile **deletes + recreates** managed-event hooks at the current URL.
   - URL = `<PUBLIC_URL or derived-from-request>/webhook?secret=<WEBHOOK_SHARED_SECRET>`. The CLI
     needs `PUBLIC_URL`; the UI button derives the origin from request headers if `PUBLIC_URL` unset.
-  - Live-verified read path: prod board `18403436566` reports 3/5 managed events already present
-    (`create_item`, `item_moved_to_any_group`, `change_subitem_column_value`); `change_column_value`
-    and `move_item_to_board` missing. **Registration not run on prod** (PHP plugin still live).
+  - Live-verified read path: prod board `18403436566` already has 3 of the 4 managed events
+    (`create_item`, `item_moved_to_any_group`, `change_subitem_column_value`) from earlier project
+    testing — these are pre-existing, NOT created by this feature; only `change_column_value` is
+    missing. **Registration not run on prod** (PHP plugin still live; localhost can't register).
 
-**All offline suites pass: `npm test` → 61 checks (ingress 10, engine 15, queue 14, polish 6,
+**All offline suites pass: `npm test` → 60 checks (ingress 9, engine 15, queue 14, polish 6,
 cutover 9, admin 7).** The legacy PHP plugin is still untouched and live.
 
 **Configurator:** run `npm run dev` (or `npm start`) and open `http://localhost:<PORT>/`. If
@@ -159,8 +166,11 @@ A rule = one **trigger** + zero-or-more AND **conditions** + one-or-more **actio
 | `subitem_checked` | a specific subitem's checkbox/status is checked | instant |
 | `all_subitems_checked` | fires once when the LAST of `subitemNames[]` reaches `label` (order-independent) | instant |
 | `status_changed_to` | a status column becomes a specific label | instant |
-| `item_moved` | item moved to another board/workspace (workspace move = board move) | instant |
 | `item_in_group_for_days` | item has sat in group X for N days | **timed** |
+
+> Removed (2026-06-17): the `item_moved` (cross-board/workspace) trigger — monday has no board-move
+> webhook in `WebhookEventType`, so it could never fire. Dropped from the engine, types,
+> normalizer, and UI to keep the surface minimal.
 
 ### Conditions (AND-combined)
 `subitem_checked` (other named subitems also checked) · `status_is` / `status_is_not` ·
@@ -203,7 +213,8 @@ A rule = one **trigger** + zero-or-more AND **conditions** + one-or-more **actio
     subitem→Done change fired the rule and posted to Slack (`matched:1, executed:1`).
 - **Webhook payloads are sparse** ("item X column Y changed") → always hydrate via the API. The PHP
   code already does this in `monday_template_cloner_get_item_with_group_and_subitems()`.
-- **No native "workspace moved" event** — detect via board change (`move_pulse_into_board`).
+- **No native "workspace/board moved" webhook** — `WebhookEventType` has no board-move event, so
+  cross-board moves can't be reacted to (the `item_moved` trigger was removed for this reason).
 - **monday `challenge` handshake:** the first POST contains `{ "challenge": "..." }`; echo it back.
 - monday may **resend** webhooks → dedupe by event id.
 

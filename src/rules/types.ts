@@ -14,7 +14,6 @@ export type Trigger =
   | { type: 'item_entered_group' }
   | { type: 'item_left_group' }
   | { type: 'status_changed_to'; columnId: string; label: string }
-  | { type: 'item_moved' }
   // For our boards "checked" = a subitem's status column reaching `label` (e.g. "Done").
   | { type: 'subitem_checked'; columnId: string; label: string; subitemName?: string }
   // Fires once when the LAST of `subitemNames` reaches `label` — order-independent.

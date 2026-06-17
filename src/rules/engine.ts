@@ -66,8 +66,8 @@ export class RulesEngine {
     const itemId = itemIdToHydrate(event);
     if (itemId === undefined) return result;
 
-    // Auto-clear pending actions when an item leaves a group / moves boards.
-    if (this.store && (event.kind === 'item_left_group' || event.kind === 'item_moved_board')) {
+    // Auto-clear pending actions when an item leaves a group.
+    if (this.store && event.kind === 'item_left_group') {
       result.cleared += this.store.cancelPendingForItem(itemId);
       this.store.clearItemEntry(itemId);
     }
@@ -284,8 +284,6 @@ function triggerKindMatches(trigger: Trigger, event: NormalizedEvent): boolean {
     case 'subitem_checked':
     case 'all_subitems_checked':
       return event.kind === 'subitem_changed';
-    case 'item_moved':
-      return event.kind === 'item_moved_board';
     case 'item_in_group_for_days':
       return false; // timed — armed at entry, fired by the worker.
   }

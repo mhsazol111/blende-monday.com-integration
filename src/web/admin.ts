@@ -157,8 +157,8 @@ export function registerAdmin(app: FastifyInstance, engine?: RulesEngine): void 
       log.info(`Registered ${result.created.length} webhook(s) on board ${boardId} → ${base}`);
       return { ok: true, ...result };
     } catch (err: any) {
-      log.warn(`register webhooks failed for board ${boardId}: ${err?.message}`);
-      return reply.code(502).send({ error: err?.message ?? 'failed' });
+      log.warn(`register webhooks failed for board ${boardId}: ${err?.message}`, err?.details);
+      return reply.code(502).send({ error: err?.message ?? 'failed', details: err?.details });
     }
   });
 

@@ -82,7 +82,6 @@ function columnLabelPair(cols) {
 const TRIGGERS = [
   { value: 'item_entered_group', label: 'Item entered the group' },
   { value: 'item_left_group', label: 'Item left the group' },
-  { value: 'item_moved', label: 'Item moved to another board/workspace' },
   { value: 'status_changed_to', label: 'Status column changed to…' },
   { value: 'subitem_checked', label: 'Subitem set (status →)' },
   { value: 'all_subitems_checked', label: 'All of these subitems set (any order)' },

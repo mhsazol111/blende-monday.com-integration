@@ -77,9 +77,6 @@ async function main() {
     sub.kind === 'subitem_changed' && sub.parentItemId === 3,
   );
 
-  const movedBoard = normalizeEvent({ type: 'move_pulse_into_board', boardId: BOARD, pulseId: 5, destBoardId: 999 });
-  check('move_pulse_into_board → item_moved_board', movedBoard.kind === 'item_moved_board');
-
   const unknown = normalizeEvent({ type: 'something_new', boardId: BOARD, pulseId: 6 });
   check('unrecognized type → unknown', unknown.kind === 'unknown');
 
