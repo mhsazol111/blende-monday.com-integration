@@ -187,6 +187,15 @@ still runs and is migrated to `item_column_changed` when edited in the UI.
     text color, unlink, and a **`</>` raw-HTML source toggle** (paste full email templates). Variable
     chips insert into either the rich view or the HTML source.
 
+**Configurator redesign (2026-06-17):** `web/index.html` + `web/app.js` rebuilt — modern light
+(monday-style) theme, **tabbed** layout (Rules / Scheduled actions / Board & connect), **one-step
+"Save rule"** (validates + upserts + PUTs to the server instantly, with optimistic rollback; delete
+persists too; the JSON box is now an "Advanced — apply & save" `<details>`), a dependency-free
+**searchable `combo()`** replacing the long column/group/people selects, **loading spinners** (board,
+subitems, queue, connect), scrollable lists with empty states, and **toast** feedback. Board
+auto-loads from `/api/config` on open. All rule/condition/action/trigger **serialize shapes are
+unchanged** (saved rules stay compatible). Backend untouched; `node --check` + live serve verified.
+
 **All offline suites pass: `npm test` → 91 checks (ingress 10, engine 38, queue 21, polish 6,
 cutover 9, admin 7).** The legacy PHP plugin is still untouched and live.
 

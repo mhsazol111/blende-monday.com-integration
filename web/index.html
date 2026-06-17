@@ -3,152 +3,227 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>monday automation — rule configurator</title>
+    <title>Blende — automation configurator</title>
     <style>
-      :root { --bd: #d8dce5; --bg: #f6f7fb; --accent: #0073ea; --muted: #676879; --danger: #d83a52; }
+      :root {
+        --accent: #0073ea; --accent-d: #0060c2; --bg: #f5f6f8; --card: #fff;
+        --bd: #e6e9f0; --bd-strong: #d0d4e0; --muted: #676879; --text: #323338;
+        --danger: #d83a52; --ok: #258750; --shadow: 0 1px 3px rgba(0,0,0,.06), 0 1px 2px rgba(0,0,0,.04);
+        --radius: 10px;
+      }
       * { box-sizing: border-box; }
-      body { margin: 0; font: 14px/1.45 -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; color: #323338; background: var(--bg); }
-      header { background: #fff; border-bottom: 1px solid var(--bd); padding: 14px 22px; display: flex; align-items: baseline; gap: 12px; }
-      header h1 { font-size: 17px; margin: 0; }
-      header .sub { color: var(--muted); font-size: 12px; }
-      main { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; padding: 18px 22px; align-items: start; }
-      .card { background: #fff; border: 1px solid var(--bd); border-radius: 8px; padding: 16px; margin-bottom: 16px; }
-      .card h2 { font-size: 14px; margin: 0 0 12px; }
-      label { display: block; font-weight: 600; font-size: 12px; margin: 10px 0 4px; }
-      input, select, textarea { width: 100%; padding: 7px 9px; border: 1px solid var(--bd); border-radius: 6px; font: inherit; background: #fff; }
-      textarea { min-height: 320px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
-      button { cursor: pointer; border: 1px solid var(--bd); background: #fff; border-radius: 6px; padding: 7px 12px; font: inherit; font-weight: 600; }
+      body { margin: 0; font: 15px/1.55 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: var(--text); background: var(--bg); }
+
+      /* top bar + tabs */
+      .topbar { background: var(--card); border-bottom: 1px solid var(--bd); padding: 0 24px 12px; position: sticky; top: 0; z-index: 20; box-shadow: 0 1px 0 rgba(0,0,0,.02); }
+      .topbar .row1 { display: flex; align-items: center; gap: 14px; padding: 14px 0 0; }
+      .brand { display: flex; align-items: center; gap: 10px; }
+      .logo { width: 32px; height: 32px; border-radius: 9px; background: linear-gradient(135deg, #0073ea, #00c2ff); color: #fff; font-weight: 800; font-size: 17px; display: flex; align-items: center; justify-content: center; box-shadow: var(--shadow); }
+      .brand-name { font-size: 18px; font-weight: 700; letter-spacing: -.01em; }
+      .brand-sub { font-size: 12px; font-weight: 500; color: var(--muted); margin-left: 3px; }
+      .board-chip { font-size: 12px; color: var(--muted); background: #eef0f6; border-radius: 20px; padding: 4px 12px; display: inline-flex; align-items: center; gap: 6px; }
+      .board-chip.live::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--ok); }
+      .tabs { display: inline-flex; gap: 2px; margin: 14px 0 0; background: #eef0f6; padding: 4px; border-radius: 11px; }
+      .tab { border: none; background: none; padding: 8px 18px; font: inherit; font-weight: 600; color: var(--muted); cursor: pointer; border-radius: 8px; transition: background .12s, color .12s; }
+      .tab:hover { color: var(--text); }
+      .tab.active { background: #fff; color: var(--accent); box-shadow: var(--shadow); }
+
+      main { padding: 22px 24px; }
+      .grid2 { display: grid; grid-template-columns: 1.1fr 1fr; gap: 18px; align-items: start; }
+      @media (max-width: 920px) { .grid2 { grid-template-columns: 1fr; } }
+
+      .card { background: var(--card); border: 1px solid var(--bd); border-radius: var(--radius); padding: 18px; margin-bottom: 16px; box-shadow: var(--shadow); }
+      .card > h2 { font-size: 15px; margin: 0 0 14px; display: flex; align-items: center; gap: 8px; }
+      .card.disabled { opacity: .5; pointer-events: none; }
+
+      label { display: block; font-weight: 600; font-size: 13px; margin: 12px 0 4px; color: #4a4b57; }
+      input, select, textarea, .combo-input { width: 100%; padding: 8px 10px; border: 1px solid var(--bd-strong); border-radius: 8px; font: inherit; background: #fff; color: var(--text); }
+      input:focus, select:focus, textarea:focus, .combo-input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(0,115,234,.12); }
+      textarea { min-height: 320px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+
+      button { cursor: pointer; border: 1px solid var(--bd-strong); background: #fff; border-radius: 8px; padding: 8px 14px; font: inherit; font-weight: 600; color: var(--text); transition: background .12s, border-color .12s; }
+      button:hover { background: #f3f4f8; }
       button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
-      button.link { border: none; background: none; color: var(--accent); padding: 2px 4px; }
-      button.danger { color: var(--danger); border: none; background: none; }
+      button.primary:hover { background: var(--accent-d); }
+      button.primary:disabled { opacity: .6; cursor: default; }
+      button.link { border: none; background: none; color: var(--accent); padding: 4px 6px; font-weight: 600; }
+      button.link:hover { background: #eef4fd; }
+      button.danger { color: var(--danger); border: none; background: none; padding: 4px 6px; }
+      button.danger:hover { background: #fdeef1; }
+
       .row { display: flex; gap: 8px; align-items: flex-end; }
       .row > * { flex: 1; }
       .row > button { flex: 0 0 auto; }
-      .subform { border: 1px dashed var(--bd); border-radius: 6px; padding: 10px; margin-top: 8px; background: #fafbfc; }
-      .hint { color: var(--muted); font-size: 11px; font-weight: 400; }
-      .pill { display: inline-block; font-size: 11px; background: #eceef4; border-radius: 10px; padding: 1px 8px; margin-left: 6px; }
-      .rule-item { border: 1px solid var(--bd); border-radius: 6px; padding: 8px 10px; margin-bottom: 8px; display: flex; justify-content: space-between; gap: 8px; }
-      .rule-item code { font-size: 11px; color: var(--muted); }
-      #status { font-size: 12px; }
-      .ok { color: #258750; }
-      .err { color: var(--danger); white-space: pre-wrap; }
-      .hidden { display: none; }
-      /* rich editor + variable chips */
+      .subform { border: 1px solid var(--bd); border-radius: 8px; padding: 12px; margin-top: 8px; background: #fafbfc; }
+      .hint { color: var(--muted); font-size: 12px; font-weight: 400; }
+      .pill { display: inline-block; font-size: 12px; background: #eef0f6; border-radius: 10px; padding: 1px 9px; font-weight: 600; }
+      .spacer { flex: 1; }
+
+      /* lists with internal scroll + empty states */
+      .scrolllist { max-height: 360px; overflow-y: auto; margin: -4px -4px 0; padding: 4px; }
+      .scrolllist::-webkit-scrollbar { width: 9px; }
+      .scrolllist::-webkit-scrollbar-thumb { background: #d6dae6; border-radius: 8px; border: 2px solid var(--card); }
+      .empty { text-align: center; color: var(--muted); font-size: 13px; padding: 26px 10px; }
+      .empty .big { font-size: 22px; display: block; margin-bottom: 6px; opacity: .5; }
+
+      .rule-item { border: 1px solid var(--bd); border-radius: 8px; padding: 10px 12px; margin-bottom: 8px; display: flex; justify-content: space-between; gap: 8px; align-items: center; }
+      .rule-item:hover { border-color: var(--bd-strong); }
+      .rule-item code { font-size: 12px; color: var(--muted); }
+
+      /* rich editor + chips */
       .toolbar { display: flex; gap: 4px; flex-wrap: wrap; margin: 4px 0; align-items: center; }
-      .toolbar button { padding: 3px 9px; font-size: 12px; font-weight: 700; }
+      .toolbar button { padding: 4px 9px; font-size: 13px; font-weight: 700; }
       .toolbar button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
-      .toolbar select { width: auto; flex: 0 0 auto; padding: 3px 6px; font-size: 12px; height: 28px; }
-      .toolbar input[type=color] { width: 30px; height: 28px; padding: 1px; flex: 0 0 auto; border-radius: 6px; }
-      .editor { min-height: 90px; border: 1px solid var(--bd); border-radius: 6px; padding: 8px 9px; background: #fff; font: inherit; }
-      .editor:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+      .toolbar select { width: auto; flex: 0 0 auto; padding: 4px 6px; font-size: 13px; height: 30px; }
+      .toolbar input[type=color] { width: 32px; height: 30px; padding: 1px; flex: 0 0 auto; border-radius: 8px; }
+      .editor { min-height: 90px; border: 1px solid var(--bd-strong); border-radius: 8px; padding: 9px 10px; background: #fff; }
+      .editor:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(0,115,234,.12); }
       .editor:empty:before { content: attr(data-ph); color: var(--muted); }
-      .editor-source { min-height: 140px; width: 100%; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; white-space: pre-wrap; }
-      .chips { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 6px; }
-      .chip { cursor: pointer; font-size: 11px; background: #eceef4; border: 1px solid var(--bd); border-radius: 10px; padding: 1px 8px; }
-      .chip:hover { background: #dfe3ee; }
+      .editor-source { min-height: 150px; width: 100%; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; white-space: pre-wrap; }
+      .chips { display: flex; gap: 5px; flex-wrap: wrap; margin-top: 6px; }
+      .chip { cursor: pointer; font-size: 12px; background: #eef0f6; border: 1px solid var(--bd); border-radius: 12px; padding: 2px 9px; }
+      .chip:hover { background: #e0e5f1; }
+
       /* queue items */
-      .qitem { border: 1px solid var(--bd); border-radius: 6px; padding: 8px 10px; margin-bottom: 8px; }
-      .qitem .meta { font-size: 11px; color: var(--muted); }
-      .qitem .acts { display: flex; gap: 6px; align-items: center; margin-top: 6px; flex-wrap: wrap; }
-      .qitem .acts input { width: auto; flex: 0 0 auto; padding: 4px 6px; }
-      .badge { font-size: 10px; border-radius: 8px; padding: 1px 7px; text-transform: uppercase; letter-spacing: .03em; }
+      .qitem { border: 1px solid var(--bd); border-radius: 8px; padding: 10px 12px; margin-bottom: 8px; }
+      .qitem .meta { font-size: 12px; color: var(--muted); margin-top: 2px; }
+      .qitem .acts { display: flex; gap: 6px; align-items: center; margin-top: 8px; flex-wrap: wrap; }
+      .qitem .acts input { width: auto; flex: 0 0 auto; padding: 5px 7px; }
+      .badge { font-size: 11px; border-radius: 8px; padding: 2px 8px; text-transform: uppercase; letter-spacing: .03em; font-weight: 700; }
       .badge.pending { background: #fff4d6; color: #785a00; }
-      .badge.sent { background: #d8f5e3; color: #1f7a47; }
+      .badge.sent { background: #d8f5e3; color: var(--ok); }
       .badge.cancelled, .badge.failed { background: #fbe0e5; color: var(--danger); }
-      @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+
+      /* searchable combobox */
+      .combo { position: relative; }
+      .combo-panel { position: absolute; left: 0; right: 0; top: calc(100% + 3px); z-index: 30; background: #fff; border: 1px solid var(--bd-strong); border-radius: 8px; box-shadow: 0 6px 20px rgba(0,0,0,.12); max-height: 240px; overflow-y: auto; }
+      .combo-opt { padding: 8px 10px; font-size: 14px; cursor: pointer; }
+      .combo-opt:hover, .combo-opt.active { background: #eef4fd; }
+      .combo-opt.sel { font-weight: 600; color: var(--accent); }
+      .combo-empty { padding: 8px 10px; color: var(--muted); font-size: 13px; }
+
+      .ok { color: var(--ok); } .err { color: var(--danger); white-space: pre-wrap; }
+      .hidden { display: none !important; }
+
+      /* spinner */
+      .spinner { display: inline-block; width: 13px; height: 13px; border: 2px solid #c7ccdb; border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; vertical-align: -2px; }
+      @keyframes spin { to { transform: rotate(360deg); } }
+
+      /* toast */
+      .toast { position: fixed; right: 18px; bottom: 18px; z-index: 100; max-width: 380px; background: #2b2c34; color: #fff; padding: 13px 17px; border-radius: 10px; box-shadow: 0 8px 28px rgba(0,0,0,.25); font-size: 14px; white-space: pre-wrap; }
+      .toast.toast-ok { background: #1f7a47; }
+      .toast.toast-err { background: var(--danger); }
     </style>
   </head>
   <body>
-    <header>
-      <h1>monday automation</h1>
-      <span class="sub">rule configurator — pick from live board data, no IDs to copy</span>
+    <header class="topbar">
+      <div class="row1">
+        <div class="brand">
+          <span class="logo">B</span>
+          <span><span class="brand-name">Blende</span><span class="brand-sub">automations</span></span>
+        </div>
+        <span class="board-chip" id="boardChip"><span class="spinner"></span> loading board…</span>
+        <span class="spacer"></span>
+        <span class="hint">config-driven monday.com notifications &amp; automations</span>
+      </div>
+      <nav class="tabs">
+        <button class="tab active" data-tab="rules">Rules</button>
+        <button class="tab" data-tab="scheduled">Scheduled actions</button>
+        <button class="tab" data-tab="board">Board &amp; connect</button>
+      </nav>
     </header>
 
     <main>
-      <div class="col">
+      <!-- RULES -->
+      <section class="tabpane" id="tab-rules">
+        <div class="grid2">
+          <div class="card disabled" id="builderCard">
+            <h2>Build a rule</h2>
+
+            <label>Rule ID</label>
+            <div class="row">
+              <input id="ruleId" placeholder="unique-rule-id" />
+              <button id="genRuleId" title="Generate a unique ID">Generate</button>
+            </div>
+
+            <label style="margin-top:14px"><input type="checkbox" id="ruleEnabled" checked style="width:auto" /> Enabled</label>
+
+            <label>Group (scope)</label>
+            <div id="scopeGroupMount"></div>
+
+            <label>Trigger</label>
+            <select id="triggerType"></select>
+            <div id="triggerParams" class="subform"></div>
+
+            <label>Conditions <span class="hint">(all must match)</span></label>
+            <div id="conditions"></div>
+            <button class="link" id="addCondition">+ add condition</button>
+
+            <label>Actions</label>
+            <div id="actions"></div>
+            <button class="link" id="addAction">+ add action</button>
+
+            <div style="margin-top:18px; display:flex; align-items:center; gap:10px">
+              <button class="primary" id="saveRule">Save rule</button>
+              <span class="hint">Saves to the server instantly. Re-using an ID overwrites it.</span>
+            </div>
+          </div>
+
+          <div>
+            <div class="card">
+              <h2>Current ruleset <span class="pill" id="ruleCount">0</span></h2>
+              <div id="ruleList" class="scrolllist"></div>
+            </div>
+
+            <details class="card">
+              <summary style="cursor:pointer; font-weight:600; font-size:14px">Advanced — ruleset JSON</summary>
+              <p class="hint" style="margin:8px 0">Source of truth. Edit and apply to save the whole ruleset.</p>
+              <textarea id="json"></textarea>
+              <div style="margin-top:10px"><button class="primary" id="applyJson">Apply &amp; save JSON</button></div>
+            </details>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCHEDULED -->
+      <section class="tabpane hidden" id="tab-scheduled">
         <div class="card">
-          <h2>1 · Load a board</h2>
+          <h2>Scheduled actions <span class="pill" id="queueCount">0</span>
+            <span class="spacer"></span>
+            <button class="link" id="refreshQueue">↻ refresh</button>
+          </h2>
+          <p class="hint">Queued emails / Slack / monday writes (relative, absolute, or N-days). Run now, reschedule, or delete.</p>
+          <div id="queueList" class="scrolllist"></div>
+        </div>
+      </section>
+
+      <!-- BOARD & CONNECT -->
+      <section class="tabpane hidden" id="tab-board">
+        <div class="card">
+          <h2>Board</h2>
           <div class="row">
             <div>
               <label>Board ID</label>
               <input id="boardId" placeholder="e.g. 18403436566" readonly />
             </div>
-            <button class="primary" id="loadBoard">Load</button>
+            <button class="primary" id="loadBoard">Reload</button>
           </div>
-          <p id="boardStatus" class="hint">Not loaded.</p>
+          <p id="boardStatus" class="hint" style="margin-top:10px">Not loaded.</p>
         </div>
 
-        <div class="card hidden" id="connectCard">
-          <h2>1½ · Connect this board <span class="hint">(one-time)</span></h2>
-          <p class="hint">
-            This subscribes the board to monday so events reach the automation. You only do this
-            once per board — changing rules later never needs re-connecting.
-          </p>
-          <div class="row" style="margin-top:8px">
+        <div class="card" id="connectCard">
+          <h2>Connect this board <span class="hint">(one-time)</span></h2>
+          <p class="hint">Subscribes the board to monday so events reach the automation. You only do this once per board — changing rules later never needs re-connecting.</p>
+          <div class="row" style="margin-top:10px">
             <div id="connectStatus" class="hint">Checking…</div>
             <button class="primary" id="connectBtn">Connect</button>
           </div>
           <div id="connectEvents" class="hint" style="margin-top:8px"></div>
         </div>
-
-        <div class="card" id="builderCard" style="opacity:.5; pointer-events:none">
-          <h2>2 · Build a rule</h2>
-
-          <label>Rule ID</label>
-          <div class="row">
-            <input id="ruleId" placeholder="unique-rule-id" />
-            <button id="genRuleId" title="Generate a unique ID">Generate</button>
-          </div>
-
-          <label><input type="checkbox" id="ruleEnabled" checked style="width:auto" /> Enabled</label>
-
-          <label>Group (scope)</label>
-          <select id="scopeGroup"></select>
-
-          <label>Trigger</label>
-          <select id="triggerType"></select>
-          <div id="triggerParams" class="subform"></div>
-
-          <label>Conditions <span class="hint">(all must match)</span></label>
-          <div id="conditions"></div>
-          <button class="link" id="addCondition">+ add condition</button>
-
-          <label>Actions</label>
-          <div id="actions"></div>
-          <button class="link" id="addAction">+ add action</button>
-
-          <div style="margin-top:14px">
-            <button class="primary" id="addRule">Add rule to ruleset →</button>
-          </div>
-        </div>
-      </div>
-
-      <div class="col">
-        <div class="card">
-          <h2>Current ruleset <span class="pill" id="ruleCount">0</span></h2>
-          <div id="ruleList"></div>
-        </div>
-
-        <div class="card">
-          <h2>Scheduled actions <span class="pill" id="queueCount">0</span>
-            <button class="link" id="refreshQueue" style="float:right">↻ refresh</button>
-          </h2>
-          <p class="hint">Queued emails/Slack messages (relative/absolute/N-days). Run now, reschedule, or delete.</p>
-          <div id="queueList"></div>
-        </div>
-
-        <div class="card">
-          <h2>Ruleset JSON <span class="hint">(editable — source of truth)</span></h2>
-          <textarea id="json"></textarea>
-          <div class="row" style="margin-top:10px">
-            <button id="applyJson">Apply JSON ↑</button>
-            <button class="primary" id="save">Save to server</button>
-          </div>
-          <p id="status" class="hint">&nbsp;</p>
-        </div>
-      </div>
+      </section>
     </main>
 
+    <div id="toast" class="toast hidden"></div>
     <script src="/app.js"></script>
   </body>
 </html>

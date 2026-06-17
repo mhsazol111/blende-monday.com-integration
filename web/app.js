@@ -16,23 +16,58 @@ function select(options, attrs = {}) {
   return el('select', attrs, options.map((o) => el('option', { value: o.value, text: o.label })));
 }
 function $(id) { return document.getElementById(id); }
-
 function fmtDate(ms) {
   if (!ms) return '—';
   try { return new Date(ms).toLocaleString(); } catch { return String(ms); }
 }
 
+// ── searchable combobox (dependency-free) ────────────────────────────────────
+// Drop-in for high-cardinality <select>s: shows labels, stores a value, filters
+// as you type. API: { node, value (get/set) } + optional onChange callback.
+function combo(options, { value = '', placeholder = '— select —', onChange } = {}) {
+  let current = value;
+  let active = -1;
+  const input = el('input', { class: 'combo-input', placeholder, autocomplete: 'off', spellcheck: 'false' });
+  const panel = el('div', { class: 'combo-panel hidden' });
+  const wrap = el('div', { class: 'combo' }, [input, panel]);
+  const labelFor = (v) => { const o = options.find((x) => x.value === v); return o ? o.label : ''; };
+  input.value = labelFor(current);
+
+  let matches = [];
+  const renderList = (filter) => {
+    const f = (filter || '').toLowerCase();
+    matches = options.filter((o) => o.label.toLowerCase().includes(f)).slice(0, 300);
+    panel.innerHTML = '';
+    if (!matches.length) { panel.appendChild(el('div', { class: 'combo-empty', text: 'no matches' })); return; }
+    matches.forEach((o, idx) => panel.appendChild(el('div', {
+      class: 'combo-opt' + (o.value === current ? ' sel' : '') + (idx === active ? ' active' : ''),
+      text: o.label, onmousedown: (e) => { e.preventDefault(); choose(o); },
+    })));
+  };
+  const open = () => { active = -1; renderList(''); panel.classList.remove('hidden'); };
+  const close = () => { panel.classList.add('hidden'); input.value = labelFor(current); };
+  const choose = (o) => { current = o.value; input.value = o.label; panel.classList.add('hidden'); if (onChange) onChange(current); };
+
+  input.addEventListener('focus', open);
+  input.addEventListener('input', () => { active = -1; renderList(input.value); panel.classList.remove('hidden'); });
+  input.addEventListener('blur', () => setTimeout(close, 130)); // let option mousedown land first
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { close(); input.blur(); }
+    else if (e.key === 'ArrowDown') { e.preventDefault(); active = Math.min(active + 1, matches.length - 1); renderList(input.value); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); active = Math.max(active - 1, 0); renderList(input.value); }
+    else if (e.key === 'Enter') { e.preventDefault(); if (matches[active]) choose(matches[active]); else if (matches[0]) choose(matches[0]); }
+  });
+
+  return { node: wrap, get value() { return current; }, set value(v) { current = v; input.value = labelFor(v); } };
+}
+
 // ── rich text editor (dependency-free, contenteditable → HTML) ─────────────────
-// One message authored as HTML works for both channels: email sends the HTML,
-// Slack gets it converted to mrkdwn server-side. Includes a clickable list of the
-// available {{variables}} that insert at the caret.
 function richEditor(initialHtml, placeholder) {
   const editor = el('div', { class: 'editor', contenteditable: 'true', 'data-ph': placeholder || 'Write a message — format with the toolbar, insert variables below' });
   editor.innerHTML = initialHtml || '';
   const source = el('textarea', { class: 'editor editor-source hidden', spellcheck: 'false' });
   let sourceMode = false;
 
-  // Remember the caret inside the editor; clicking a chip/toolbar can move it.
   let savedRange = null;
   const saveRange = () => {
     const sel = window.getSelection();
@@ -84,7 +119,6 @@ function richEditor(initialHtml, placeholder) {
     tbtn('⌫', 'removeFormat', 'clear formatting'), htmlBtn,
   ]);
 
-  // Insert a {{variable}} at the caret — into the source textarea or the editor.
   const insertAtCaret = (text) => {
     if (sourceMode) {
       const s = source.selectionStart ?? source.value.length;
@@ -120,9 +154,7 @@ function richEditor(initialHtml, placeholder) {
   };
 }
 
-// The {{placeholders}} the engine resolves (see buildContext): item/group/status
-// plus every column on the loaded board, and — for subitem-triggered rules — the
-// triggering subitem's name and columns.
+// The {{placeholders}} the engine resolves (see buildContext).
 function availableVariables() {
   const base = [
     { token: '{{item.name}}', hint: 'Item name' },
@@ -143,6 +175,7 @@ function availableVariables() {
 const state = { structure: null, boardId: null, ruleset: { rules: [] }, queue: [] };
 const conditionRows = [];
 const actionRows = [];
+let scopeGroupCombo = null;
 
 function secret() {
   return new URLSearchParams(location.search).get('secret') || localStorage.getItem('mas_secret') || '';
@@ -160,23 +193,49 @@ function labelsFor(columnId) {
 }
 
 /**
- * Subitem picker: a dropdown of real subitem names for the currently-selected
- * group (you can also type one). Subitems differ per item but share names
- * within a group, so rules match by name.
+ * Subitem name picker — same searchable combo look as the other selects, but
+ * free-typeable (subitems can be typed, not only picked) and async-loaded for
+ * the selected group.
  */
 function subitemNamePicker(initValue) {
-  const listId = 'dl_' + Math.random().toString(36).slice(2);
-  const input = el('input', { list: listId, placeholder: 'subitem — pick or type', value: initValue || '' });
-  const dl = el('datalist', { id: listId });
-  const node = el('div', {}, [input, dl]);
-  const groupId = $('scopeGroup') ? $('scopeGroup').value : '';
+  const input = el('input', { class: 'combo-input', placeholder: 'subitem — pick or type', value: initValue || '', autocomplete: 'off', spellcheck: 'false' });
+  const panel = el('div', { class: 'combo-panel hidden' });
+  const node = el('div', { class: 'combo' }, [input, panel]);
+  let names = [];
+  let shown = [];
+  let active = -1;
+
+  const pick = (n) => { input.value = n; active = -1; panel.classList.add('hidden'); };
+  const renderList = () => {
+    const f = input.value.toLowerCase();
+    shown = names.filter((n) => n.toLowerCase().includes(f)).slice(0, 300);
+    panel.innerHTML = '';
+    if (!shown.length) { panel.classList.add('hidden'); return; }
+    shown.forEach((n, idx) => panel.appendChild(el('div', {
+      class: 'combo-opt' + (idx === active ? ' active' : ''), text: n,
+      onmousedown: (e) => { e.preventDefault(); pick(n); },
+    })));
+    panel.classList.remove('hidden');
+  };
+  input.addEventListener('focus', () => { active = -1; renderList(); });
+  input.addEventListener('input', () => { active = -1; renderList(); });
+  input.addEventListener('blur', () => setTimeout(() => panel.classList.add('hidden'), 130));
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') panel.classList.add('hidden');
+    else if (e.key === 'ArrowDown') { e.preventDefault(); active = Math.min(active + 1, shown.length - 1); renderList(); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); active = Math.max(active - 1, 0); renderList(); }
+    else if (e.key === 'Enter' && shown[active]) { e.preventDefault(); pick(shown[active]); }
+  });
+
+  const groupId = scopeGroupCombo ? scopeGroupCombo.value : '';
   if (state.boardId && groupId) {
+    input.placeholder = 'loading subitems…';
     fetch('/api/group-subitems?boardId=' + encodeURIComponent(state.boardId) + '&groupId=' + encodeURIComponent(groupId))
       .then((r) => r.json())
       .then((d) => {
-        const names = d.names || [];
-        names.forEach((n) => dl.appendChild(el('option', { value: n })));
-        if (!names.length) input.placeholder = 'no subitems found in group — type a name';
+        names = d.names || [];
+        input.placeholder = names.length ? 'subitem — pick or type' : 'no subitems found in group — type a name';
+        if (document.activeElement === input) renderList();
       })
       .catch(() => { input.placeholder = 'could not load subitems — type a name'; });
   } else {
@@ -185,9 +244,9 @@ function subitemNamePicker(initValue) {
   return { node, serialize: () => input.value.trim() };
 }
 
-/** A linked column-select + label-select; label list follows the chosen column. */
+/** A linked column-combo + label-select; label list follows the chosen column. */
 function columnLabelPair(cols, init) {
-  const colSel = select([{ value: '', label: '— column —' }, ...colOptions(cols)]);
+  const colSel = combo([{ value: '', label: '— column —' }, ...colOptions(cols)], { placeholder: '— column —', onChange: () => refresh() });
   const labelSel = select([{ value: '', label: '— label —' }]);
   const refresh = () => {
     labelSel.innerHTML = '';
@@ -195,9 +254,8 @@ function columnLabelPair(cols, init) {
       labelSel.appendChild(el('option', { value: o.value, text: o.label })),
     );
   };
-  colSel.addEventListener('change', refresh);
   if (init && init.columnId) { colSel.value = init.columnId; refresh(); labelSel.value = init.label || ''; }
-  const node = el('div', { class: 'row' }, [colSel, labelSel]);
+  const node = el('div', { class: 'row' }, [colSel.node, labelSel]);
   return { node, serialize: () => ({ columnId: colSel.value, label: labelSel.value }) };
 }
 
@@ -211,24 +269,20 @@ const TRIGGERS = [
   { value: 'item_in_group_for_days', label: 'Item in group for N days' },
 ];
 
-/** Multiple subitem pickers with add/remove; serializes to a names array. */
 function multiSubitemPicker(initNames) {
   const rows = [];
   const list = el('div');
   const add = (value) => {
     const picker = subitemNamePicker(value);
-    const remove = el('button', {
-      class: 'danger',
-      text: '✕',
-      onclick: (e) => { e.preventDefault(); const i = rows.indexOf(entry); if (i >= 0) { rows.splice(i, 1); row.remove(); } },
-    });
+    const remove = el('button', { class: 'danger', text: '✕',
+      onclick: (e) => { e.preventDefault(); const i = rows.indexOf(entry); if (i >= 0) { rows.splice(i, 1); row.remove(); } } });
     const row = el('div', { class: 'row' }, [picker.node, remove]);
     const entry = { row, serialize: picker.serialize };
     rows.push(entry);
     list.appendChild(row);
   };
   if (initNames && initNames.length) initNames.forEach((n) => add(n));
-  else { add(); add(); } // start with two empty rows
+  else { add(); add(); }
   const addBtn = el('button', { class: 'link', text: '+ add subitem', onclick: (e) => { e.preventDefault(); add(); } });
   const node = el('div', {}, [list, addBtn]);
   return { node, serialize: () => rows.map((r) => r.serialize()).filter(Boolean) };
@@ -237,13 +291,11 @@ let triggerSerialize = () => ({ type: 'item_entered_group' });
 
 function renderTriggerParams(init) {
   const type = $('triggerType').value;
-  const i = init && init.type === type ? init : null; // only prefill matching type
+  const i = init && init.type === type ? init : null;
   const box = $('triggerParams');
   box.innerHTML = '';
   if (type === 'item_column_changed') {
-    // Any board column + either "Any change" or a specific value (status → label dropdown).
-    const col = select([{ value: '', label: '— column —' }, ...colOptions(boardCols())]);
-    if (i?.columnId) col.value = i.columnId;
+    const col = combo([{ value: '', label: '— column —' }, ...colOptions(boardCols())], { placeholder: '— column —', value: i?.columnId || '', onChange: () => renderVal() });
     const modeSel = select([{ value: 'any', label: 'Any change' }, { value: 'value', label: 'A specific value' }]);
     if (i && i.value) modeSel.value = 'value';
     const valWrap = el('div');
@@ -265,14 +317,9 @@ function renderTriggerParams(init) {
       }
       initVal = '';
     };
-    col.addEventListener('change', renderVal);
     modeSel.addEventListener('change', renderVal);
     renderVal();
-    box.appendChild(el('label', { text: 'Column' }));
-    box.appendChild(col);
-    box.appendChild(el('label', { text: 'Fires on' }));
-    box.appendChild(modeSel);
-    box.appendChild(valWrap);
+    box.append(el('label', { text: 'Column' }), col.node, el('label', { text: 'Fires on' }), modeSel, valWrap);
     triggerSerialize = () => {
       const t = { type, columnId: col.value };
       const v = getValue();
@@ -282,10 +329,7 @@ function renderTriggerParams(init) {
   } else if (type === 'subitem_checked') {
     const pair = columnLabelPair(byType(subCols(), ['status', 'color']), i);
     const picker = subitemNamePicker(i?.subitemName);
-    box.appendChild(el('label', { text: 'Subitem' }));
-    box.appendChild(picker.node);
-    box.appendChild(el('label', { text: 'Status column → label that counts as "checked" (e.g. Done)' }));
-    box.appendChild(pair.node);
+    box.append(el('label', { text: 'Subitem' }), picker.node, el('label', { text: 'Status column → label that counts as "checked" (e.g. Done)' }), pair.node);
     triggerSerialize = () => {
       const p = pair.serialize();
       const nm = picker.serialize();
@@ -294,10 +338,7 @@ function renderTriggerParams(init) {
   } else if (type === 'all_subitems_checked') {
     const pair = columnLabelPair(byType(subCols(), ['status', 'color']), i);
     const multi = multiSubitemPicker(i?.subitemNames);
-    box.appendChild(el('label', { text: 'Subitems — fires once when ALL reach the status (any order)' }));
-    box.appendChild(multi.node);
-    box.appendChild(el('label', { text: 'Status column → label (e.g. Done)' }));
-    box.appendChild(pair.node);
+    box.append(el('label', { text: 'Subitems — fires once when ALL reach the status (any order)' }), multi.node, el('label', { text: 'Status column → label (e.g. Done)' }), pair.node);
     triggerSerialize = () => {
       const p = pair.serialize();
       return { type, columnId: p.columnId, label: p.label, subitemNames: multi.serialize() };
@@ -305,10 +346,7 @@ function renderTriggerParams(init) {
   } else if (type === 'item_in_group_for_days') {
     const days = el('input', { type: 'number', min: '1', value: i?.days != null ? String(i.days) : '7' });
     const repeat = el('input', { type: 'number', min: '0', placeholder: 'repeat every N days (optional)', value: i?.repeatEveryDays != null ? String(i.repeatEveryDays) : '' });
-    box.appendChild(el('label', { text: 'Days' }));
-    box.appendChild(days);
-    box.appendChild(el('label', { text: 'Repeat every (days)' }));
-    box.appendChild(repeat);
+    box.append(el('label', { text: 'Days' }), days, el('label', { text: 'Repeat every (days)' }), repeat);
     triggerSerialize = () => {
       const t = { type, days: Number(days.value) || 0 };
       if (Number(repeat.value) > 0) t.repeatEveryDays = Number(repeat.value);
@@ -336,41 +374,34 @@ function makeConditionRow(init) {
   const typeSel = select(CONDITIONS.map((c) => ({ value: c.value, label: c.label })));
   const params = el('div');
   let serializeParams = () => ({});
-  let pending = init || null; // consumed on first render to prefill
-
+  let pending = init || null;
   if (init && init.type) typeSel.value = init.type;
 
   const render = () => {
     const t = typeSel.value;
-    const i = pending; pending = null; // only prefill the initial type
+    const i = pending; pending = null;
     params.innerHTML = '';
     if (t === 'status_is' || t === 'status_is_not') {
       const pair = columnLabelPair(byType(boardCols(), ['status', 'color']), i);
       params.appendChild(pair.node);
       serializeParams = pair.serialize;
     } else if (t === 'column_equals') {
-      const col = select([{ value: '', label: '— column —' }, ...colOptions(boardCols())]);
+      const col = combo([{ value: '', label: '— column —' }, ...colOptions(boardCols())], { placeholder: '— column —', value: i?.columnId || '' });
       const val = el('input', { placeholder: 'value (matches column text)', value: i?.value || '' });
-      if (i?.columnId) col.value = i.columnId;
-      params.appendChild(el('div', { class: 'row' }, [col, val]));
+      params.appendChild(el('div', { class: 'row' }, [col.node, val]));
       serializeParams = () => ({ columnId: col.value, value: val.value });
     } else if (t === 'column_empty' || t === 'column_not_empty') {
-      const col = select([{ value: '', label: '— column —' }, ...colOptions(boardCols())]);
-      if (i?.columnId) col.value = i.columnId;
-      params.appendChild(col);
+      const col = combo([{ value: '', label: '— column —' }, ...colOptions(boardCols())], { placeholder: '— column —', value: i?.columnId || '' });
+      params.appendChild(col.node);
       serializeParams = () => ({ columnId: col.value });
     } else if (t === 'in_group' || t === 'moved_from_group') {
-      const g = select([{ value: '', label: '— group —' }, ...groupOptions()]);
-      if (i?.groupId) g.value = i.groupId;
-      params.appendChild(g);
+      const g = combo([{ value: '', label: '— group —' }, ...groupOptions()], { placeholder: '— group —', value: i?.groupId || '' });
+      params.appendChild(g.node);
       serializeParams = () => ({ groupId: g.value });
     } else if (t === 'subitem_checked') {
       const pair = columnLabelPair(byType(subCols(), ['status', 'color']), i);
       const picker = subitemNamePicker(i?.subitemName);
-      params.appendChild(el('label', { text: 'Subitem' }));
-      params.appendChild(picker.node);
-      params.appendChild(el('label', { text: 'Status → label' }));
-      params.appendChild(pair.node);
+      params.append(el('label', { text: 'Subitem' }), picker.node, el('label', { text: 'Status → label' }), pair.node);
       serializeParams = () => {
         const p = pair.serialize();
         const nm = picker.serialize();
@@ -396,11 +427,6 @@ const ACTIONS = [
   { value: 'clone_template_subitems', label: 'Clone template subitems' },
 ];
 
-/**
- * Controls for the set_column action: choose item/subitem target, a column, and
- * a value. For status/color columns the value is a label dropdown (sends the
- * label index); other columns get a free-text input (supports {{variables}}).
- */
 function setColumnControls(init) {
   let initSubitem = init?.subitemName;
   let initColumnId = init?.columnId;
@@ -434,10 +460,8 @@ function setColumnControls(init) {
   };
   const renderCol = () => {
     colWrap.innerHTML = '';
-    colSel = select([{ value: '', label: '— column —' }, ...colOptions(colsFor())]);
-    if (initColumnId) colSel.value = initColumnId;
-    colSel.addEventListener('change', renderValue);
-    colWrap.appendChild(colSel);
+    colSel = combo([{ value: '', label: '— column —' }, ...colOptions(colsFor())], { placeholder: '— column —', value: initColumnId || '', onChange: () => renderValue() });
+    colWrap.appendChild(colSel.node);
     renderValue();
     initColumnId = '';
   };
@@ -446,8 +470,7 @@ function setColumnControls(init) {
     subPicker = null;
     if (target.value === 'subitem') {
       subPicker = subitemNamePicker(initSubitem);
-      subWrap.appendChild(el('label', { text: 'Subitem (by name)' }));
-      subWrap.appendChild(subPicker.node);
+      subWrap.append(el('label', { text: 'Subitem (by name)' }), subPicker.node);
       initSubitem = '';
     }
   };
@@ -455,11 +478,7 @@ function setColumnControls(init) {
   renderSub();
   renderCol();
 
-  const node = el('div', {}, [
-    el('label', { text: 'Target' }), target, subWrap,
-    el('label', { text: 'Column' }), colWrap,
-    el('label', { text: 'Value' }), valWrap,
-  ]);
+  const node = el('div', {}, [el('label', { text: 'Target' }), target, subWrap, el('label', { text: 'Column' }), colWrap, el('label', { text: 'Value' }), valWrap]);
   const serialize = () => {
     const a = { columnId: colSel ? colSel.value : '', value: getValue() };
     if (target.value === 'subitem') { a.target = 'subitem'; if (subPicker) a.subitemName = subPicker.serialize(); }
@@ -508,7 +527,6 @@ function makeActionRow(init) {
   const params = el('div');
   let serializeParams = () => ({});
   let pending = init || null;
-
   if (init && init.type) typeSel.value = init.type;
 
   const render = () => {
@@ -528,14 +546,13 @@ function makeActionRow(init) {
     } else if (t === 'email') {
       const when = whenControl(i?.when);
       const to = el('input', { placeholder: 'a@x.com, b@y.com', value: (i?.to || []).join(', ') });
-      const toCol = select([{ value: '', label: '— none —' }, ...colOptions(byType(boardCols(), ['people']))]);
-      if (i?.toFromColumn) toCol.value = i.toFromColumn;
+      const toCol = combo([{ value: '', label: '— none —' }, ...colOptions(byType(boardCols(), ['people']))], { placeholder: '— none —', value: i?.toFromColumn || '' });
       const subject = el('input', { placeholder: 'subject, e.g. {{item.name}} is Done', value: i?.subject || '' });
       const editor = richEditor(i?.body, 'Email body — rich text supported');
       params.append(
         when.node,
         el('label', { text: 'To (literal addresses)' }), to,
-        el('label', { text: 'To (from people column)' }), toCol,
+        el('label', { text: 'To (from people column)' }), toCol.node,
         el('label', { text: 'Subject' }), subject,
         el('label', { text: 'Body (rich HTML)' }), editor.node,
       );
@@ -553,9 +570,8 @@ function makeActionRow(init) {
       serializeParams = () => ({ when: when.serialize(), ...sc.serialize() });
     } else if (t === 'clone_template_subitems') {
       const grp = el('input', { value: i?.templatesGroupTitle || 'Templates', placeholder: 'Templates group title' });
-      const srcCol = select([{ value: '', label: '— subitem source column —' }, ...colOptions(subCols())]);
-      if (i?.templateSourceColumnId) srcCol.value = i.templateSourceColumnId;
-      params.append(el('label', { text: 'Templates group title' }), grp, el('label', { text: 'Template-source column (subitem)' }), srcCol);
+      const srcCol = combo([{ value: '', label: '— subitem source column —' }, ...colOptions(subCols())], { placeholder: '— subitem source column —', value: i?.templateSourceColumnId || '' });
+      params.append(el('label', { text: 'Templates group title' }), grp, el('label', { text: 'Template-source column (subitem)' }), srcCol.node);
       serializeParams = () => ({ templatesGroupTitle: grp.value, templateSourceColumnId: srcCol.value });
     } else {
       params.appendChild(el('span', { class: 'hint', text: 'Cancels all pending scheduled actions for the item.' }));
@@ -577,7 +593,6 @@ function removeRow(arr, row) {
 }
 
 // ── assemble + persist ───────────────────────────────────────────────────────
-/** A readable, unique rule id (trigger type + random), unique within the ruleset. */
 function generateRuleId() {
   const type = ($('triggerType') && $('triggerType').value) || 'rule';
   const existing = new Set(state.ruleset.rules.map((r) => r.id));
@@ -589,15 +604,11 @@ function generateRuleId() {
 function buildRule() {
   const id = $('ruleId').value.trim();
   if (!id) throw new Error('Rule ID is required.');
-  const groupId = $('scopeGroup').value;
+  const groupId = scopeGroupCombo ? scopeGroupCombo.value : '';
   if (!groupId) throw new Error('Pick a group.');
   const rule = {
-    id,
-    enabled: $('ruleEnabled').checked,
-    boardId: Number(state.boardId),
-    scope: { groupId },
-    trigger: triggerSerialize(),
-    actions: actionRows.map((r) => r.serialize()),
+    id, enabled: $('ruleEnabled').checked, boardId: Number(state.boardId),
+    scope: { groupId }, trigger: triggerSerialize(), actions: actionRows.map((r) => r.serialize()),
   };
   const conds = conditionRows.map((r) => r.serialize());
   if (conds.length) rule.conditions = conds;
@@ -605,96 +616,142 @@ function buildRule() {
   return rule;
 }
 
+/** PUT the whole ruleset to the server. Returns {ok, count} or {ok:false, error}. */
+async function persistRuleset() {
+  const res = await fetch('/api/rules', {
+    method: 'PUT', headers: { 'Content-Type': 'application/json', 'x-webhook-secret': secret() },
+    body: JSON.stringify(state.ruleset),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (res.ok) return { ok: true, count: data.count };
+  if (res.status === 401) return { ok: false, error: 'Unauthorized — append ?secret=YOUR_SECRET to the URL.' };
+  return { ok: false, error: (data.error || res.statusText) + (data.problems ? '\n- ' + data.problems.join('\n- ') : '') };
+}
+
 function syncJsonFromState() {
   $('json').value = JSON.stringify(state.ruleset, null, 2);
   renderRuleList();
 }
+
 function renderRuleList() {
   const list = $('ruleList');
   list.innerHTML = '';
   $('ruleCount').textContent = state.ruleset.rules.length;
+  if (!state.ruleset.rules.length) {
+    list.appendChild(el('div', { class: 'empty' }, [el('span', { class: 'big', text: '📋' }), 'No rules yet — build one on the left.']));
+    return;
+  }
   state.ruleset.rules.forEach((r, i) => {
     const meta = el('div', {}, [
       el('strong', { text: r.id }),
       el('div', {}, [el('code', { text: `${r.trigger?.type} · ${r.scope?.groupId ?? ''} · ${(r.actions || []).length} action(s)` })]),
     ]);
     const edit = el('button', { class: 'link', text: 'edit', onclick: () => loadRuleIntoBuilder(r) });
-    const del = el('button', { class: 'danger', text: 'delete', onclick: () => { state.ruleset.rules.splice(i, 1); syncJsonFromState(); } });
+    const del = el('button', { class: 'danger', text: 'delete', onclick: () => deleteRule(i) });
     list.appendChild(el('div', { class: 'rule-item' }, [meta, el('div', {}, [edit, del])]));
   });
 }
 
-/** Load a saved rule back into the builder form for editing. */
+/** One-step save: build the rule, upsert, persist to server (rollback on fail). */
+async function saveRule() {
+  let rule;
+  try { rule = buildRule(); } catch (e) { return toast(e.message, 'err'); }
+  const prev = state.ruleset.rules.slice();
+  const idx = state.ruleset.rules.findIndex((r) => r.id === rule.id);
+  if (idx >= 0) state.ruleset.rules[idx] = rule; else state.ruleset.rules.push(rule);
+  toast('Saving…');
+  const r = await persistRuleset();
+  if (r.ok) { syncJsonFromState(); toast(`Saved "${rule.id}" — ${r.count} rule(s) live.`, 'ok'); }
+  else { state.ruleset.rules = prev; toast('Save failed: ' + r.error, 'err'); }
+}
+
+async function deleteRule(i) {
+  const rule = state.ruleset.rules[i];
+  if (!rule || !confirm(`Delete rule "${rule.id}"?`)) return;
+  const prev = state.ruleset.rules.slice();
+  state.ruleset.rules.splice(i, 1);
+  const r = await persistRuleset();
+  if (r.ok) { syncJsonFromState(); toast(`Deleted "${rule.id}".`, 'ok'); }
+  else { state.ruleset.rules = prev; syncJsonFromState(); toast('Delete failed: ' + r.error, 'err'); }
+}
+
+async function applyAndSaveJson() {
+  let payload;
+  try { payload = JSON.parse($('json').value); } catch (e) { return toast('Invalid JSON: ' + e.message, 'err'); }
+  const prev = state.ruleset;
+  state.ruleset = payload && Array.isArray(payload.rules) ? payload : { rules: [] };
+  const r = await persistRuleset();
+  if (r.ok) { renderRuleList(); toast(`Saved ${r.count} rule(s) live.`, 'ok'); }
+  else { state.ruleset = prev; toast('Save failed: ' + r.error, 'err'); }
+}
+
 function loadRuleIntoBuilder(rule) {
+  showTab('rules');
   $('ruleId').value = rule.id || '';
   $('ruleEnabled').checked = rule.enabled !== false;
-  $('scopeGroup').value = rule.scope?.groupId || '';
+  if (scopeGroupCombo) scopeGroupCombo.value = rule.scope?.groupId || '';
 
-  // Trigger: set the type, then render its params prefilled. Migrate legacy
-  // status_changed_to rules into the unified item_column_changed on edit.
   let trig = rule.trigger || {};
   if (trig.type === 'status_changed_to') trig = { type: 'item_column_changed', columnId: trig.columnId, value: trig.label };
   $('triggerType').value = trig.type || TRIGGERS[0].value;
   renderTriggerParams(trig);
 
-  // Conditions: rebuild rows from the saved list.
   conditionRows.length = 0;
   $('conditions').innerHTML = '';
-  (rule.conditions || []).forEach((c) => {
-    const row = makeConditionRow(c);
-    conditionRows.push(row);
-    $('conditions').appendChild(row.node);
-  });
+  (rule.conditions || []).forEach((c) => { const row = makeConditionRow(c); conditionRows.push(row); $('conditions').appendChild(row.node); });
 
-  // Actions: rebuild rows from the saved list.
   actionRows.length = 0;
   $('actions').innerHTML = '';
-  (rule.actions || []).forEach((a) => {
-    const row = makeActionRow(a);
-    actionRows.push(row);
-    $('actions').appendChild(row.node);
-  });
+  (rule.actions || []).forEach((a) => { const row = makeActionRow(a); actionRows.push(row); $('actions').appendChild(row.node); });
 
   $('builderCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
-  setStatus(`Editing "${rule.id}" — change fields, then "Add rule to ruleset →" (same ID overwrites).`, 'ok');
+  toast(`Editing "${rule.id}" — change fields, then Save rule (same ID overwrites).`, 'ok');
 }
 
-function setStatus(msg, cls) {
-  const s = $('status');
-  s.className = cls || 'hint';
-  s.textContent = msg;
+// ── toast feedback ─────────────────────────────────────────────────────────────
+let toastTimer;
+function toast(msg, kind) {
+  const t = $('toast');
+  t.className = 'toast ' + (kind === 'err' ? 'toast-err' : kind === 'ok' ? 'toast-ok' : '');
+  t.textContent = msg;
+  t.classList.remove('hidden');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.add('hidden'), kind === 'err' ? 7000 : 3500);
 }
 
-// ── wire up ──────────────────────────────────────────────────────────────────
+// ── board + connect ────────────────────────────────────────────────────────────
 async function loadBoard() {
   const id = $('boardId').value.trim();
   if (!id) return;
+  $('boardChip').innerHTML = '<span class="spinner"></span> loading board…';
   $('boardStatus').textContent = 'Loading…';
   try {
     const res = await fetch('/api/discover?boardId=' + encodeURIComponent(id));
     if (!res.ok) throw new Error((await res.json()).error || res.statusText);
     state.structure = await res.json();
     state.boardId = id;
-    $('scopeGroup').innerHTML = '';
-    [{ value: '', label: '— select group —' }, ...groupOptions()].forEach((o) => $('scopeGroup').appendChild(el('option', { value: o.value, text: o.label })));
+    scopeGroupCombo = combo([{ value: '', label: '— select group —' }, ...groupOptions()], { placeholder: '— select group —', onChange: () => renderTriggerParams() });
+    const mount = $('scopeGroupMount'); mount.innerHTML = ''; mount.appendChild(scopeGroupCombo.node);
     renderTriggerParams();
-    $('builderCard').style.opacity = '1';
-    $('builderCard').style.pointerEvents = 'auto';
+    $('builderCard').classList.remove('disabled');
+    const b = state.structure.board;
+    $('boardChip').className = 'board-chip live';
+    $('boardChip').textContent = b.name;
     const sb = state.structure.subitemBoard ? `, subitem board ${state.structure.subitemBoard.id}` : '';
-    $('boardStatus').innerHTML = `<span class="ok">Loaded "${state.structure.board.name}"</span> — ${state.structure.board.groups.length} groups, ${state.structure.board.columns.length} columns${sb}.`;
-    $('connectCard').classList.remove('hidden');
+    $('boardStatus').innerHTML = `<span class="ok">Loaded "${b.name}"</span> — ${b.groups.length} groups, ${b.columns.length} columns${sb}.`;
     refreshWebhookStatus();
   } catch (err) {
+    $('boardChip').className = 'board-chip';
+    $('boardChip').textContent = 'board error';
     $('boardStatus').innerHTML = `<span class="err">Failed: ${err.message}</span>`;
   }
 }
 
-// ── connect board (webhooks) ───────────────────────────────────────────────────
 async function refreshWebhookStatus() {
   if (!state.boardId) return;
   const statusEl = $('connectStatus');
   const eventsEl = $('connectEvents');
-  statusEl.textContent = 'Checking…';
+  statusEl.innerHTML = '<span class="spinner"></span> checking…';
   eventsEl.textContent = '';
   try {
     const res = await fetch('/api/webhooks?boardId=' + encodeURIComponent(state.boardId));
@@ -708,9 +765,7 @@ async function refreshWebhookStatus() {
       statusEl.innerHTML = `<span class="err">Not connected</span> — ${missing} of ${data.managed.length} events missing.`;
       $('connectBtn').textContent = 'Connect';
     }
-    eventsEl.innerHTML = data.managed
-      .map((m) => `${m.registered ? '✓' : '✗'} ${m.event}`)
-      .join('&nbsp;&nbsp;');
+    eventsEl.innerHTML = data.managed.map((m) => `${m.registered ? '✓' : '✗'} ${m.event}`).join('&nbsp;&nbsp;');
   } catch (err) {
     statusEl.innerHTML = `<span class="err">Could not check: ${err.message}</span>`;
   }
@@ -720,11 +775,10 @@ async function connectBoard() {
   if (!state.boardId) return;
   const btn = $('connectBtn');
   btn.disabled = true;
-  $('connectStatus').textContent = 'Connecting…';
+  $('connectStatus').innerHTML = '<span class="spinner"></span> connecting…';
   try {
     const res = await fetch('/api/webhooks/register', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-webhook-secret': secret() },
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'x-webhook-secret': secret() },
       body: JSON.stringify({ boardId: state.boardId }),
     });
     const data = await res.json().catch(() => ({}));
@@ -734,6 +788,7 @@ async function connectBoard() {
       const list = data.failed.map((f) => `${f.event} (${f.error})`).join('; ');
       $('connectEvents').innerHTML = `<span class="err">Registered ${data.created.length}, but ${data.failed.length} unsupported: ${list}</span>`;
     }
+    toast('Board connected.', 'ok');
   } catch (err) {
     $('connectStatus').innerHTML = `<span class="err">Failed: ${err.message}</span>`;
   } finally {
@@ -751,23 +806,9 @@ async function loadRules() {
   syncJsonFromState();
 }
 
-async function save() {
-  let payload;
-  try { payload = JSON.parse($('json').value); } catch (e) { return setStatus('Invalid JSON: ' + e.message, 'err'); }
-  setStatus('Saving…');
-  const res = await fetch('/api/rules', {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json', 'x-webhook-secret': secret() },
-    body: JSON.stringify(payload),
-  });
-  const data = await res.json().catch(() => ({}));
-  if (res.ok) { state.ruleset = payload; renderRuleList(); setStatus(`Saved ${data.count} rule(s). Engine reloaded.`, 'ok'); }
-  else if (res.status === 401) { setStatus('Unauthorized — append ?secret=YOUR_SECRET to the URL.', 'err'); }
-  else { setStatus('Save failed: ' + (data.error || res.statusText) + (data.problems ? '\n- ' + data.problems.join('\n- ') : ''), 'err'); }
-}
-
 // ── scheduled actions (queue) ──────────────────────────────────────────────────
 async function loadQueue() {
+  $('queueList').innerHTML = '<div class="empty"><span class="spinner"></span> loading…</div>';
   try {
     const res = await fetch('/api/queue');
     const data = await res.json();
@@ -781,11 +822,13 @@ function renderQueue() {
   list.innerHTML = '';
   const q = state.queue || [];
   $('queueCount').textContent = q.length;
-  if (!q.length) { list.appendChild(el('p', { class: 'hint', text: 'No scheduled actions yet.' })); return; }
+  if (!q.length) { list.appendChild(el('div', { class: 'empty' }, [el('span', { class: 'big', text: '🗓️' }), 'No scheduled actions yet.'])); return; }
   q.forEach((a) => {
     const summary = a.actionType === 'email'
       ? `${(a.payload && a.payload.subject) || '(no subject)'} → ${((a.payload && a.payload.to) || []).join(', ')}`
-      : ((a.payload && a.payload.text) || '').replace(/<[^>]+>/g, '').slice(0, 90);
+      : a.actionType === 'set_column'
+        ? `set ${(a.payload && a.payload.columnId) || ''} = ${(a.payload && a.payload.value) || ''}`
+        : ((a.payload && a.payload.text) || '').replace(/<[^>]+>/g, '').slice(0, 90);
     const head = el('div', {}, [
       el('span', { class: 'badge ' + a.status, text: a.status }),
       el('strong', { text: ' ' + a.actionType }),
@@ -797,7 +840,7 @@ function renderQueue() {
       el('button', { text: '▶ run now', onclick: () => queueAction(a.id, 'run') }),
       when,
       el('button', { text: 'reschedule', onclick: () => {
-        if (!when.value) return setStatus('Pick a date/time first to reschedule.', 'err');
+        if (!when.value) return toast('Pick a date/time first to reschedule.', 'err');
         queueAction(a.id, 'reschedule', { at: new Date(when.value).toISOString() });
       } }),
       el('button', { class: 'danger', text: 'delete', onclick: () => queueAction(a.id, 'delete') }),
@@ -810,48 +853,43 @@ async function queueAction(id, kind, body) {
   const opts = { headers: { 'x-webhook-secret': secret() } };
   let url = '/api/queue/' + id;
   if (kind === 'run') { opts.method = 'POST'; url += '/run'; }
-  else if (kind === 'reschedule') {
-    opts.method = 'POST'; url += '/reschedule';
-    opts.headers['Content-Type'] = 'application/json';
-    opts.body = JSON.stringify(body);
-  } else if (kind === 'delete') { opts.method = 'DELETE'; }
+  else if (kind === 'reschedule') { opts.method = 'POST'; url += '/reschedule'; opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
+  else if (kind === 'delete') { opts.method = 'DELETE'; }
   const res = await fetch(url, opts);
   const data = await res.json().catch(() => ({}));
-  if (res.ok) { setStatus(`Queue: ${kind} ok (action ${id}).`, 'ok'); loadQueue(); }
-  else if (res.status === 401) setStatus('Unauthorized — append ?secret=YOUR_SECRET to the URL.', 'err');
-  else setStatus(`Queue ${kind} failed: ${data.error || res.statusText}`, 'err');
+  if (res.ok) { toast(`Queue: ${kind} ok (action ${id}).`, 'ok'); loadQueue(); }
+  else if (res.status === 401) toast('Unauthorized — append ?secret=YOUR_SECRET to the URL.', 'err');
+  else toast(`Queue ${kind} failed: ${data.error || res.statusText}`, 'err');
+}
+
+// ── tabs ───────────────────────────────────────────────────────────────────────
+function showTab(name) {
+  document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t.dataset.tab === name));
+  document.querySelectorAll('.tabpane').forEach((p) => p.classList.toggle('hidden', p.id !== 'tab-' + name));
+  if (name === 'scheduled') loadQueue();
+  if (name === 'board') refreshWebhookStatus();
 }
 
 function init() {
   $('triggerType').innerHTML = '';
   TRIGGERS.forEach((t) => $('triggerType').appendChild(el('option', { value: t.value, text: t.label })));
   $('triggerType').addEventListener('change', () => renderTriggerParams());
-  $('scopeGroup').addEventListener('change', () => renderTriggerParams()); // refresh subitem list per group
 
+  document.querySelectorAll('.tab').forEach((t) => t.addEventListener('click', () => showTab(t.dataset.tab)));
   $('loadBoard').addEventListener('click', loadBoard);
   $('connectBtn').addEventListener('click', connectBoard);
   $('refreshQueue').addEventListener('click', loadQueue);
   $('genRuleId').addEventListener('click', () => { $('ruleId').value = generateRuleId(); });
   $('addCondition').addEventListener('click', () => { const r = makeConditionRow(); conditionRows.push(r); $('conditions').appendChild(r.node); });
   $('addAction').addEventListener('click', () => { const r = makeActionRow(); actionRows.push(r); $('actions').appendChild(r.node); });
-  $('addRule').addEventListener('click', () => {
-    try {
-      const rule = buildRule();
-      const existing = state.ruleset.rules.findIndex((r) => r.id === rule.id);
-      if (existing >= 0) state.ruleset.rules[existing] = rule; else state.ruleset.rules.push(rule);
-      syncJsonFromState();
-      setStatus('Added "' + rule.id + '" to the ruleset (not yet saved).', 'ok');
-    } catch (err) { setStatus(err.message, 'err'); }
-  });
-  $('applyJson').addEventListener('click', () => {
-    try { state.ruleset = JSON.parse($('json').value); renderRuleList(); setStatus('Applied JSON.', 'ok'); }
-    catch (e) { setStatus('Invalid JSON: ' + e.message, 'err'); }
-  });
-  $('save').addEventListener('click', save);
+  $('saveRule').addEventListener('click', saveRule);
+  $('applyJson').addEventListener('click', applyAndSaveJson);
 
-  fetch('/api/config').then((r) => r.json()).then((cfg) => { if (cfg.defaultBoardId) $('boardId').value = cfg.defaultBoardId; }).catch(() => {});
   loadRules();
-  loadQueue();
+  fetch('/api/config').then((r) => r.json()).then((cfg) => {
+    if (cfg.defaultBoardId) { $('boardId').value = cfg.defaultBoardId; loadBoard(); }
+    else { $('boardChip').className = 'board-chip'; $('boardChip').textContent = 'no board set'; }
+  }).catch(() => {});
 }
 
 init();
