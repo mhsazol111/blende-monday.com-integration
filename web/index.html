@@ -34,11 +34,15 @@
       .err { color: var(--danger); white-space: pre-wrap; }
       .hidden { display: none; }
       /* rich editor + variable chips */
-      .toolbar { display: flex; gap: 4px; flex-wrap: wrap; margin: 4px 0; }
+      .toolbar { display: flex; gap: 4px; flex-wrap: wrap; margin: 4px 0; align-items: center; }
       .toolbar button { padding: 3px 9px; font-size: 12px; font-weight: 700; }
+      .toolbar button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+      .toolbar select { width: auto; flex: 0 0 auto; padding: 3px 6px; font-size: 12px; height: 28px; }
+      .toolbar input[type=color] { width: 30px; height: 28px; padding: 1px; flex: 0 0 auto; border-radius: 6px; }
       .editor { min-height: 90px; border: 1px solid var(--bd); border-radius: 6px; padding: 8px 9px; background: #fff; font: inherit; }
       .editor:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
       .editor:empty:before { content: attr(data-ph); color: var(--muted); }
+      .editor-source { min-height: 140px; width: 100%; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; white-space: pre-wrap; }
       .chips { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 6px; }
       .chip { cursor: pointer; font-size: 11px; background: #eceef4; border: 1px solid var(--bd); border-radius: 10px; padding: 1px 8px; }
       .chip:hover { background: #dfe3ee; }

@@ -427,6 +427,37 @@ async function main() {
     check('item_column_changed works for status columns too', r.matched === 1 && e.slacks.length === 1);
   }
 
+  // 15) subitem variables ({{subitem.name}}, {{subitem.column.<id>}}) in templates.
+  {
+    const SUBITEM_BOARD = 18403436575;
+    const rule: Rule = {
+      id: 'subvar', enabled: true, boardId: BOARD, scope: { groupId: GROUP },
+      trigger: { type: 'subitem_checked', columnId: 'status', label: 'Done', subitemName: 'X-ray' },
+      actions: [{ type: 'slack', when: { mode: 'immediate' }, text: '{{subitem.name}} note={{subitem.column.text_n}}' }],
+    };
+    const item = makeItem({ subitems: [{ id: 9, boardId: SUBITEM_BOARD, name: 'X-ray', columns: { status: { text: 'Done', value: null, type: 'color' }, text_n: { text: 'urgent', value: null, type: 'text' } } }] });
+    const e = makeEngine([rule], item);
+    const evt: NormalizedEvent = { kind: 'subitem_changed', boardId: SUBITEM_BOARD, subitemId: 9, parentItemId: 100, columnId: 'status', label: 'Done', value: null, raw: { pulseName: 'X-ray' } };
+    await e.engine.handleEvent(evt);
+    check('subitem variables resolve in templates', e.slacks[0]?.text === 'X-ray note=urgent');
+  }
+
+  // 16) HTML entities decode even without tags (the "&nbsp; shows literally" fix).
+  {
+    const rule: Rule = {
+      id: 'nb', enabled: true, boardId: BOARD, scope: { groupId: GROUP }, trigger: { type: 'item_entered_group' },
+      actions: [
+        { type: 'email', when: { mode: 'immediate' }, to: ['x@y.com'], subject: 's', body: 'hello&nbsp;&nbsp;world' },
+        { type: 'slack', when: { mode: 'immediate' }, text: 'a&nbsp;b' },
+      ],
+    };
+    const e = makeEngine([rule], makeItem());
+    await e.engine.handleEvent(entered(100));
+    check('email text fallback decodes &nbsp;', e.emails[0].body === 'hello  world');
+    check('email sends HTML when only entities present', e.emails[0].html === 'hello&nbsp;&nbsp;world');
+    check('slack decodes &nbsp;', e.slacks[0].text === 'a b');
+  }
+
   console.log(`\n${passed} checks passed.`);
 }
 

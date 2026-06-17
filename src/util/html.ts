@@ -25,9 +25,13 @@ function collapseBlankLines(s: string): string {
   return s.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
 }
 
-/** Does the string actually contain HTML tags? (plain text shouldn't be touched) */
+/**
+ * Does the string contain HTML markup OR entities? Entities matter because a
+ * contenteditable editor emits `&nbsp;` for spaces even with no tags — without
+ * this they'd reach email/Slack literally (the "spaces show as &nbsp;" bug).
+ */
 export function looksLikeHtml(s: string): boolean {
-  return /<\/?[a-z][\s\S]*>/i.test(s);
+  return /<\/?[a-z][\s\S]*>/i.test(s) || /&(?:[a-z]+|#\d+);/i.test(s);
 }
 
 /** Insert newlines for block-level tags and bullets for list items. */

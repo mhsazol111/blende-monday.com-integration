@@ -487,10 +487,22 @@ function buildContext(item: ItemContext, event: NormalizedEvent): Record<string,
   let status = item.columns['status']?.text ?? '';
   if (event.kind === 'status_changed' && event.label) status = event.label;
 
-  return {
+  const ctx: Record<string, unknown> = {
     item: { id: item.id, name: item.name },
     group: { id: item.groupId, title: item.groupTitle },
     status,
     column,
   };
+
+  // For subitem-triggered rules, expose the TRIGGERING subitem so templates can
+  // use {{subitem.name}} and {{subitem.column.<id>}}.
+  if (event.kind === 'subitem_changed') {
+    const name = String((event.raw as any).pulseName ?? '');
+    const sub = item.subitems.find((s) => s.name.toLowerCase() === name.toLowerCase());
+    const subColumn: Record<string, string> = {};
+    if (sub) for (const [id, snap] of Object.entries(sub.columns)) subColumn[id] = snap.text;
+    ctx.subitem = { name: sub?.name ?? name, column: subColumn };
+  }
+
+  return ctx;
 }

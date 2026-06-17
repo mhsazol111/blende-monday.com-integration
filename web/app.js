@@ -27,37 +27,74 @@ function fmtDate(ms) {
 // Slack gets it converted to mrkdwn server-side. Includes a clickable list of the
 // available {{variables}} that insert at the caret.
 function richEditor(initialHtml, placeholder) {
-  const editor = el('div', { class: 'editor', contenteditable: 'true', 'data-ph': placeholder || 'Write a message — use the buttons for formatting and chips for variables' });
+  const editor = el('div', { class: 'editor', contenteditable: 'true', 'data-ph': placeholder || 'Write a message — format with the toolbar, insert variables below' });
   editor.innerHTML = initialHtml || '';
-  const cmd = (name, arg) => (e) => { e.preventDefault(); editor.focus(); document.execCommand(name, false, arg); };
-  const tbtn = (label, name) => el('button', { text: label, title: name, onmousedown: cmd(name) });
-  const linkBtn = el('button', { text: '🔗', title: 'link', onmousedown: (e) => {
-    e.preventDefault(); editor.focus();
-    const url = prompt('Link URL:'); if (url) document.execCommand('createLink', false, url);
-  } });
-  const toolbar = el('div', { class: 'toolbar' }, [
-    tbtn('B', 'bold'), tbtn('I', 'italic'), tbtn('U', 'underline'),
-    tbtn('• List', 'insertUnorderedList'), linkBtn,
-    el('button', { text: 'Clear', title: 'remove formatting', onmousedown: cmd('removeFormat') }),
-  ]);
+  const source = el('textarea', { class: 'editor editor-source hidden', spellcheck: 'false' });
+  let sourceMode = false;
 
-  // Remember the caret position inside this editor, because clicking a chip can
-  // move the selection. We snapshot the range on every interaction and restore
-  // it before inserting.
+  // Remember the caret inside the editor; clicking a chip/toolbar can move it.
   let savedRange = null;
   const saveRange = () => {
     const sel = window.getSelection();
     if (sel && sel.rangeCount && editor.contains(sel.anchorNode)) savedRange = sel.getRangeAt(0).cloneRange();
   };
   ['keyup', 'mouseup', 'focus'].forEach((ev) => editor.addEventListener(ev, saveRange));
-
-  // Insert text (a {{variable}}) at the last known caret position in this editor.
-  const insertAtCaret = (text) => {
+  const restoreRange = () => {
     editor.focus();
-    const sel = window.getSelection();
     if (savedRange && editor.contains(savedRange.startContainer)) {
-      sel.removeAllRanges(); sel.addRange(savedRange);
+      const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(savedRange);
     }
+  };
+  const exec = (name, arg) => (e) => { e.preventDefault(); restoreRange(); document.execCommand(name, false, arg); saveRange(); };
+  const tbtn = (label, name, title) => el('button', { text: label, title: title || name, onmousedown: exec(name) });
+
+  const heading = select(
+    [{ value: 'P', label: 'Normal' }, { value: 'H1', label: 'Heading 1' }, { value: 'H2', label: 'Heading 2' }, { value: 'H3', label: 'Heading 3' }],
+    { title: 'text style' },
+  );
+  heading.addEventListener('mousedown', saveRange);
+  heading.addEventListener('change', () => { restoreRange(); document.execCommand('formatBlock', false, heading.value); });
+
+  const color = el('input', { type: 'color', title: 'text color', value: '#323338' });
+  color.addEventListener('input', () => { restoreRange(); document.execCommand('foreColor', false, color.value); });
+
+  const link = el('button', { text: '🔗', title: 'insert link', onmousedown: (e) => {
+    e.preventDefault(); restoreRange();
+    const url = prompt('Link URL:'); if (url) document.execCommand('createLink', false, url); saveRange();
+  } });
+
+  const htmlBtn = el('button', { text: '</>', title: 'edit raw HTML', onmousedown: (e) => { e.preventDefault(); toggleSource(); } });
+  const toggleSource = () => {
+    if (!sourceMode) {
+      source.value = editor.innerHTML;
+      editor.classList.add('hidden'); source.classList.remove('hidden'); htmlBtn.classList.add('active');
+    } else {
+      editor.innerHTML = source.value;
+      editor.classList.remove('hidden'); source.classList.add('hidden'); htmlBtn.classList.remove('active');
+    }
+    sourceMode = !sourceMode;
+  };
+
+  const toolbar = el('div', { class: 'toolbar' }, [
+    heading,
+    tbtn('B', 'bold'), tbtn('I', 'italic'), tbtn('U', 'underline'), tbtn('S', 'strikeThrough', 'strikethrough'),
+    tbtn('•', 'insertUnorderedList', 'bullet list'), tbtn('1.', 'insertOrderedList', 'numbered list'),
+    tbtn('⬅', 'justifyLeft', 'align left'), tbtn('▤', 'justifyCenter', 'align center'), tbtn('➡', 'justifyRight', 'align right'),
+    link, tbtn('⛓', 'unlink', 'remove link'), color,
+    tbtn('⌫', 'removeFormat', 'clear formatting'), htmlBtn,
+  ]);
+
+  // Insert a {{variable}} at the caret — into the source textarea or the editor.
+  const insertAtCaret = (text) => {
+    if (sourceMode) {
+      const s = source.selectionStart ?? source.value.length;
+      const e = source.selectionEnd ?? source.value.length;
+      source.value = source.value.slice(0, s) + text + source.value.slice(e);
+      source.focus(); source.selectionStart = source.selectionEnd = s + text.length;
+      return;
+    }
+    restoreRange();
+    const sel = window.getSelection();
     if (sel.rangeCount && editor.contains(sel.anchorNode)) {
       const range = sel.getRangeAt(0);
       range.deleteContents();
@@ -67,22 +104,25 @@ function richEditor(initialHtml, placeholder) {
       sel.removeAllRanges(); sel.addRange(range);
       savedRange = range.cloneRange();
     } else {
-      editor.innerHTML += text; // editor never focused yet → append
+      editor.innerHTML += text;
     }
   };
   const chips = el('div', { class: 'chips' },
     availableVariables().map((v) =>
       el('span', { class: 'chip', title: v.hint || '', text: v.token,
-        // mousedown + preventDefault so the chip doesn't steal focus/selection.
         onmousedown: (e) => { e.preventDefault(); insertAtCaret(v.token); } })));
-  const varsLabel = el('div', { class: 'hint', text: 'Insert variable:' });
 
-  const node = el('div', {}, [toolbar, editor, varsLabel, chips]);
-  return { node, getHtml: () => editor.innerHTML.trim(), setHtml: (h) => { editor.innerHTML = h || ''; } };
+  const node = el('div', {}, [toolbar, editor, source, el('div', { class: 'hint', text: 'Insert variable:' }), chips]);
+  return {
+    node,
+    getHtml: () => (sourceMode ? source.value.trim() : editor.innerHTML.trim()),
+    setHtml: (h) => { editor.innerHTML = h || ''; if (sourceMode) source.value = h || ''; },
+  };
 }
 
 // The {{placeholders}} the engine resolves (see buildContext): item/group/status
-// plus every column on the loaded board, addressed by id.
+// plus every column on the loaded board, and — for subitem-triggered rules — the
+// triggering subitem's name and columns.
 function availableVariables() {
   const base = [
     { token: '{{item.name}}', hint: 'Item name' },
@@ -91,7 +131,12 @@ function availableVariables() {
     { token: '{{status}}', hint: 'Item status label' },
   ];
   const cols = boardCols().map((c) => ({ token: `{{column.${c.id}}}`, hint: `${c.title} [${c.type}]` }));
-  return base.concat(cols);
+  const subs = subCols().length
+    ? [{ token: '{{subitem.name}}', hint: 'Triggering subitem name (subitem rules)' }].concat(
+        subCols().map((c) => ({ token: `{{subitem.column.${c.id}}}`, hint: `subitem ${c.title} [${c.type}]` })),
+      )
+    : [];
+  return base.concat(cols).concat(subs);
 }
 
 // ── state ────────────────────────────────────────────────────────────────────

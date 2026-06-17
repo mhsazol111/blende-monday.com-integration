@@ -176,7 +176,18 @@ matches the changed columnId; post-hydration `itemColumnMatches` checks the valu
 registered `change_column_value` webhook already delivers all column types. Legacy `status_changed_to`
 still runs and is migrated to `item_column_changed` when edited in the UI.
 
-**All offline suites pass: `npm test` → 87 checks (ingress 10, engine 34, queue 21, polish 6,
+**Subitem template vars + richer email editor (2026-06-17):**
+  - `buildContext` now exposes the **triggering subitem** on subitem-based rules: `{{subitem.name}}`
+    and `{{subitem.column.<id>}}` (resolved from the changed subitem on the hydrated parent). The UI
+    variable chips list these whenever the board has a subitem board.
+  - **`&nbsp;` fix:** `looksLikeHtml` now also detects HTML entities, so contenteditable output with
+    `&nbsp;` (spaces) is decoded for the text/Slack forms and sent as HTML for email — previously it
+    leaked `&nbsp;` literally when the body had entities but no tags.
+  - **Editor upgrades:** the rich editor gained headings, strikethrough, ordered list, alignment,
+    text color, unlink, and a **`</>` raw-HTML source toggle** (paste full email templates). Variable
+    chips insert into either the rich view or the HTML source.
+
+**All offline suites pass: `npm test` → 91 checks (ingress 10, engine 38, queue 21, polish 6,
 cutover 9, admin 7).** The legacy PHP plugin is still untouched and live.
 
 **Configurator:** run `npm run dev` (or `npm start`) and open `http://localhost:<PORT>/`. If
