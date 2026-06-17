@@ -160,7 +160,7 @@ function columnLabelPair(cols, init) {
 const TRIGGERS = [
   { value: 'item_entered_group', label: 'Item entered the group' },
   { value: 'item_left_group', label: 'Item left the group' },
-  { value: 'item_column_changed', label: 'Item column changed to…' },
+  { value: 'item_column_changed', label: 'Item column changed to' },
   { value: 'subitem_checked', label: 'Subitem set (status →)' },
   { value: 'all_subitems_checked', label: 'All of these subitems set (any order)' },
   { value: 'item_in_group_for_days', label: 'Item in group for N days' },
