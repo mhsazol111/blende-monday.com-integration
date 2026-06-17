@@ -843,7 +843,7 @@ function renderQueue() {
         if (!when.value) return toast('Pick a date/time first to reschedule.', 'err');
         queueAction(a.id, 'reschedule', { at: new Date(when.value).toISOString() });
       } }),
-      el('button', { class: 'danger', text: 'delete', onclick: () => queueAction(a.id, 'delete') }),
+      el('button', { class: 'danger', text: 'delete', onclick: () => { if (confirm(`Delete this scheduled ${a.actionType} action (rule ${a.ruleId})?`)) queueAction(a.id, 'delete'); } }),
     ]);
     list.appendChild(el('div', { class: 'qitem' }, [head, meta, acts]));
   });

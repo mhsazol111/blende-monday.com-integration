@@ -30,7 +30,7 @@
 
       main { padding: 22px 24px; }
       .grid2 { display: grid; grid-template-columns: 1.1fr 1fr; gap: 18px; align-items: start; }
-      @media (max-width: 920px) { .grid2 { grid-template-columns: 1fr; } }
+      @media (max-width: 920px) { .grid2 { grid-template-columns: 1fr; } .topbar .row1 { flex-direction: column;} }
 
       .card { background: var(--card); border: 1px solid var(--bd); border-radius: var(--radius); padding: 18px; margin-bottom: 16px; box-shadow: var(--shadow); }
       .card > h2 { font-size: 15px; margin: 0 0 14px; display: flex; align-items: center; gap: 8px; }
@@ -61,6 +61,7 @@
 
       /* lists with internal scroll + empty states */
       .scrolllist { max-height: 360px; overflow-y: auto; margin: -4px -4px 0; padding: 4px; }
+      #queueList.scrolllist { max-height: 540px; }
       .scrolllist::-webkit-scrollbar { width: 9px; }
       .scrolllist::-webkit-scrollbar-thumb { background: #d6dae6; border-radius: 8px; border: 2px solid var(--card); }
       .empty { text-align: center; color: var(--muted); font-size: 13px; padding: 26px 10px; }
