@@ -375,6 +375,31 @@ async function main() {
     check('clone re-hydrates so set_column finds the new subitem', writes.length === 1 && writes[0].itemId === 77);
   }
 
+  // 13) item_left_group fires on a move out of its source group (not on create).
+  {
+    const SOURCE = 'group_source', DEST = 'group_dest';
+    const rule: Rule = {
+      id: 'left', enabled: true, boardId: BOARD, scope: { groupId: SOURCE },
+      trigger: { type: 'item_left_group' },
+      actions: [{ type: 'slack', when: { mode: 'immediate' }, text: 'left source' }],
+    };
+    const move = (from?: string, reason: 'moved' | 'created' = 'moved'): NormalizedEvent => ({
+      kind: 'item_entered_group', boardId: BOARD, itemId: 100, groupId: DEST, reason, fromGroupId: from, raw: {},
+    });
+
+    let e = makeEngine([rule], makeItem({ groupId: DEST, groupTitle: 'Dest' }));
+    let r = await e.engine.handleEvent(move(SOURCE));
+    check('item_left_group fires when item leaves its source group', r.matched === 1 && e.slacks.length === 1);
+
+    e = makeEngine([rule], makeItem({ groupId: DEST }));
+    r = await e.engine.handleEvent(move('group_other'));
+    check('item_left_group ignores leaving a different group', r.matched === 0 && e.slacks.length === 0);
+
+    e = makeEngine([rule], makeItem({ groupId: SOURCE }));
+    r = await e.engine.handleEvent(move(undefined, 'created'));
+    check('item_left_group does not fire on create', r.matched === 0 && e.slacks.length === 0);
+  }
+
   console.log(`\n${passed} checks passed.`);
 }
 

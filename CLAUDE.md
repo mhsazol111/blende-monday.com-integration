@@ -159,7 +159,16 @@ on freshly-created items (previously the set_column used the pre-clone snapshot 
 delay does NOT solve this — the subitem is resolved at event time from the snapshot, not at send
 time — so re-hydration is the correct fix.
 
-**All offline suites pass: `npm test` → 79 checks (ingress 10, engine 26, queue 21, polish 6,
+**`item_left_group` fixed (2026-06-17):** monday delivers a group move as ONE `move_pulse_into_group`
+event (normalized to `item_entered_group` with `fromGroupId`), so the engine never saw an
+"item_left_group" event and the trigger could never fire. Now `triggerKindMatches` treats a move as a
+leave of its source group, and a trigger-aware `ruleScopeMatches` scopes `item_left_group` rules to
+`event.fromGroupId` (the group left) rather than the item's current group. A single A→B move fires
+both `item_entered_group`(B) and `item_left_group`(A) rules. (Immediate actions are the intended use;
+a *scheduled* `item_left_group` action would be cancelled by the auto-clear-on-leave in
+`onEnteredGroup` — noted, not addressed.)
+
+**All offline suites pass: `npm test` → 82 checks (ingress 10, engine 29, queue 21, polish 6,
 cutover 9, admin 7).** The legacy PHP plugin is still untouched and live.
 
 **Configurator:** run `npm run dev` (or `npm start`) and open `http://localhost:<PORT>/`. If

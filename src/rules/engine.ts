@@ -107,7 +107,7 @@ export class RulesEngine {
     // Instant rule matching.
     for (const rule of candidates) {
       if (rule.boardId !== item.boardId) continue; // parent board for subitem events
-      if (!scopeMatches(rule, item)) continue;
+      if (!ruleScopeMatches(rule, item, event)) continue;
       if (!triggerDetailsMatch(rule.trigger, event)) continue;
       if (rule.trigger.type === 'all_subitems_checked' && !allSubitemsAtLabel(item, rule.trigger)) continue;
       if (!conditionsPass(rule.conditions ?? [], item, evalCtx)) continue;
@@ -349,7 +349,9 @@ function triggerKindMatches(trigger: Trigger, event: NormalizedEvent): boolean {
     case 'item_entered_group':
       return event.kind === 'item_entered_group';
     case 'item_left_group':
-      return event.kind === 'item_left_group';
+      // monday delivers a move as ONE event (move_pulse_into_group → entered).
+      // From the source group's perspective the item LEFT, so a move fires this too.
+      return event.kind === 'item_left_group' || (event.kind === 'item_entered_group' && event.reason === 'moved');
     case 'status_changed_to':
       return event.kind === 'status_changed';
     case 'subitem_checked':
@@ -394,6 +396,21 @@ function allSubitemsAtLabel(
         (s.columns[trigger.columnId]?.text ?? '') === trigger.label,
     ),
   );
+}
+
+/**
+ * Scope check that is trigger-aware: an `item_left_group` rule is scoped to the
+ * group the item LEFT (the move's source), not the group it's now in.
+ */
+function ruleScopeMatches(rule: Rule, item: ItemContext, event: NormalizedEvent): boolean {
+  if (rule.trigger.type === 'item_left_group') {
+    const leftGroup =
+      event.kind === 'item_left_group' ? event.fromGroupId
+      : event.kind === 'item_entered_group' ? event.fromGroupId
+      : undefined;
+    return !!rule.scope.groupId && rule.scope.groupId === leftGroup;
+  }
+  return scopeMatches(rule, item);
 }
 
 function scopeMatches(rule: Rule, item: ItemContext): boolean {
