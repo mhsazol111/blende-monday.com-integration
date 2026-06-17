@@ -5,7 +5,10 @@ import { log } from '../util/logger.js';
 export interface EmailMessage {
   to: string[];
   subject: string;
+  /** Plain-text body (always present — the fallback for non-HTML clients). */
   body: string;
+  /** Optional HTML body (rich-text rules). Sent alongside `body`. */
+  html?: string;
 }
 
 export interface SlackMessage {
@@ -46,6 +49,7 @@ export const defaultSenders: Senders = {
       to: msg.to.join(', '),
       subject: msg.subject,
       text: msg.body,
+      ...(msg.html ? { html: msg.html } : {}),
     });
     log.info(`[email] sent to ${msg.to.join(', ')} — "${msg.subject}".`);
   },

@@ -49,7 +49,7 @@ export function buildServer(engine?: RulesEngine, store?: Store): FastifyInstanc
   app.get('/api/last-events', async () => ({ events: recentEvents }));
 
   // Configurator UI + its API (Phase 7).
-  registerAdmin(app, engine);
+  registerAdmin(app, engine, store);
 
   app.post('/webhook', async (request, reply) => {
     const body = (request.body ?? {}) as WebhookBody;

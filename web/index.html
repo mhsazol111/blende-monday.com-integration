@@ -33,6 +33,24 @@
       .ok { color: #258750; }
       .err { color: var(--danger); white-space: pre-wrap; }
       .hidden { display: none; }
+      /* rich editor + variable chips */
+      .toolbar { display: flex; gap: 4px; flex-wrap: wrap; margin: 4px 0; }
+      .toolbar button { padding: 3px 9px; font-size: 12px; font-weight: 700; }
+      .editor { min-height: 90px; border: 1px solid var(--bd); border-radius: 6px; padding: 8px 9px; background: #fff; font: inherit; }
+      .editor:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+      .editor:empty:before { content: attr(data-ph); color: var(--muted); }
+      .chips { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 6px; }
+      .chip { cursor: pointer; font-size: 11px; background: #eceef4; border: 1px solid var(--bd); border-radius: 10px; padding: 1px 8px; }
+      .chip:hover { background: #dfe3ee; }
+      /* queue items */
+      .qitem { border: 1px solid var(--bd); border-radius: 6px; padding: 8px 10px; margin-bottom: 8px; }
+      .qitem .meta { font-size: 11px; color: var(--muted); }
+      .qitem .acts { display: flex; gap: 6px; align-items: center; margin-top: 6px; flex-wrap: wrap; }
+      .qitem .acts input { width: auto; flex: 0 0 auto; padding: 4px 6px; }
+      .badge { font-size: 10px; border-radius: 8px; padding: 1px 7px; text-transform: uppercase; letter-spacing: .03em; }
+      .badge.pending { background: #fff4d6; color: #785a00; }
+      .badge.sent { background: #d8f5e3; color: #1f7a47; }
+      .badge.cancelled, .badge.failed { background: #fbe0e5; color: var(--danger); }
       @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
     </style>
   </head>
@@ -49,7 +67,7 @@
           <div class="row">
             <div>
               <label>Board ID</label>
-              <input id="boardId" placeholder="e.g. 18403436566" />
+              <input id="boardId" placeholder="e.g. 18403436566" readonly />
             </div>
             <button class="primary" id="loadBoard">Load</button>
           </div>
@@ -73,7 +91,10 @@
           <h2>2 · Build a rule</h2>
 
           <label>Rule ID</label>
-          <input id="ruleId" placeholder="unique-rule-id" />
+          <div class="row">
+            <input id="ruleId" placeholder="unique-rule-id" />
+            <button id="genRuleId" title="Generate a unique ID">Generate</button>
+          </div>
 
           <label><input type="checkbox" id="ruleEnabled" checked style="width:auto" /> Enabled</label>
 
@@ -102,6 +123,14 @@
         <div class="card">
           <h2>Current ruleset <span class="pill" id="ruleCount">0</span></h2>
           <div id="ruleList"></div>
+        </div>
+
+        <div class="card">
+          <h2>Scheduled actions <span class="pill" id="queueCount">0</span>
+            <button class="link" id="refreshQueue" style="float:right">↻ refresh</button>
+          </h2>
+          <p class="hint">Queued emails/Slack messages (relative/absolute/N-days). Run now, reschedule, or delete.</p>
+          <div id="queueList"></div>
         </div>
 
         <div class="card">

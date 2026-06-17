@@ -174,6 +174,27 @@ async function main() {
     store.close();
   }
 
+  // G) queue management (admin UI): list / get / reschedule / delete.
+  {
+    const store = new SqliteStore(':memory:');
+    store.enqueue({ itemId: 7, ruleId: 'r', actionType: 'slack', payload: { text: 'hi' }, dueAt: future });
+    const all = store.listActions();
+    check('listActions returns the queued row', all.length === 1 && all[0].itemId === 7);
+    const id = all[0].id;
+    check('getAction fetches by id', store.getAction(id)?.ruleId === 'r');
+
+    store.rescheduleAction(id, 1); // move into the past → becomes due
+    check('rescheduleAction set new due + pending', store.dueActions(future).some((a) => a.id === id));
+
+    store.markSent(id, Date.now());
+    store.rescheduleAction(id, 1);
+    check('reschedule resets a sent action back to pending', store.getAction(id)?.status === 'pending');
+
+    store.deleteAction(id);
+    check('deleteAction removes the row', store.getAction(id) === null && store.listActions().length === 0);
+    store.close();
+  }
+
   console.log(`\n${passed} checks passed.`);
 }
 

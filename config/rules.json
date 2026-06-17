@@ -1,3 +1,26 @@
 {
-  "rules": []
+  "rules": [
+    {
+      "id": "item_entered_group-gos10",
+      "enabled": true,
+      "boardId": 18403436566,
+      "scope": {
+        "groupId": "group_mm2wbwep"
+      },
+      "trigger": {
+        "type": "item_entered_group"
+      },
+      "actions": [
+        {
+          "type": "slack",
+          "when": {
+            "mode": "relative",
+            "days": 0,
+            "hours": 6
+          },
+          "text": "{{item.name}}&nbsp;{{status}} {{item.id}}"
+        }
+      ]
+    }
+  ]
 }

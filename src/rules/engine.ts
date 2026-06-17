@@ -1,5 +1,6 @@
 import { log } from '../util/logger.js';
 import { renderTemplate } from '../util/template.js';
+import { htmlToText, htmlToSlack, looksLikeHtml } from '../util/html.js';
 import type { NormalizedEvent } from '../events/types.js';
 import { hydrateItem, type Hydrator, type ItemContext } from '../monday/hydrate.js';
 import { defaultSenders, type Senders } from '../senders/index.js';
@@ -159,7 +160,7 @@ export class RulesEngine {
   /** Send a rendered payload now (also used by the worker for due actions). */
   async dispatch(actionType: QueuedActionType, payload: unknown): Promise<void> {
     if (actionType === 'email') {
-      const p = payload as { to: string[]; subject: string; body: string };
+      const p = payload as { to: string[]; subject: string; body: string; html?: string };
       await this.senders.sendEmail(p);
     } else {
       const p = payload as { webhookUrl: string; text: string };
@@ -229,19 +230,27 @@ function renderAction(
   item: ItemContext,
 ): { actionType: QueuedActionType; payload: unknown } {
   if (action.type === 'email') {
+    // Body may be rich HTML (configurator) or plain text (older rules). Send HTML
+    // when present and always include a plain-text fallback.
+    const rendered = renderTemplate(action.body, ctx);
     return {
       actionType: 'email',
       payload: {
         to: mergeRecipients(action.to, action.toFromColumn, item),
         subject: renderTemplate(action.subject, ctx),
-        body: renderTemplate(action.body, ctx),
+        body: htmlToText(rendered),
+        ...(looksLikeHtml(rendered) ? { html: rendered } : {}),
       },
     };
   }
   if (action.type === 'slack') {
+    // Slack can't render HTML — convert rich text to Slack mrkdwn.
     return {
       actionType: 'slack',
-      payload: { webhookUrl: action.webhookUrl ?? '', text: renderTemplate(action.text, ctx) },
+      payload: {
+        webhookUrl: action.webhookUrl ?? '',
+        text: htmlToSlack(renderTemplate(action.text, ctx)),
+      },
     };
   }
   throw new Error(`renderAction called with non-sendable action: ${(action as Action).type}`);

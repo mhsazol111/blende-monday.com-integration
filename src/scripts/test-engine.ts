@@ -246,6 +246,28 @@ async function main() {
     check('relative-timed action deferred, not sent', r.deferred === 1 && slacks.length === 0);
   }
 
+  // 8) rich-text (HTML) body → HTML email + plain-text fallback + Slack mrkdwn.
+  {
+    const rules: Rule[] = [
+      {
+        id: 'rich',
+        enabled: true,
+        boardId: BOARD,
+        scope: { groupId: GROUP },
+        trigger: { type: 'item_entered_group' },
+        actions: [
+          { type: 'email', when: { mode: 'immediate' }, to: ['x@y.com'], subject: 's', body: '<p>Hi <strong>{{item.name}}</strong></p>' },
+          { type: 'slack', when: { mode: 'immediate' }, text: 'See <a href="https://m.co">board</a> for <strong>{{item.name}}</strong>' },
+        ],
+      },
+    ];
+    const { engine, emails, slacks } = makeEngine(rules, makeItem());
+    await engine.handleEvent(entered(100));
+    check('email keeps HTML body', emails[0].html === '<p>Hi <strong>NP Patient</strong></p>');
+    check('email plain-text fallback strips tags', emails[0].body === 'Hi NP Patient');
+    check('slack converts HTML to mrkdwn', slacks[0].text === 'See <https://m.co|board> for *NP Patient*');
+  }
+
   console.log(`\n${passed} checks passed.`);
 }
 

@@ -14,6 +14,7 @@ import {
 import { saveRules, validateRuleset } from '../rules/loader.js';
 import type { RulesEngine } from '../rules/engine.js';
 import type { Rule } from '../rules/types.js';
+import type { Store } from '../queue/types.js';
 
 /**
  * Configurator backend + static UI (Phase 7).
@@ -45,7 +46,7 @@ function resolvePublicBaseUrl(req: { headers: Record<string, unknown> }): string
   return host ? `${proto}://${host}` : '';
 }
 
-export function registerAdmin(app: FastifyInstance, engine?: RulesEngine): void {
+export function registerAdmin(app: FastifyInstance, engine?: RulesEngine, store?: Store): void {
   // ── static UI ──────────────────────────────────────────────────────────────
   // `no-store` so the app shell is never cached by browsers or the CDN
   // (Cloudflare) — otherwise a deploy ships new code but stale assets keep being
@@ -172,5 +173,54 @@ export function registerAdmin(app: FastifyInstance, engine?: RulesEngine): void 
     } catch (err: any) {
       return reply.code(502).send({ error: err?.message ?? 'failed' });
     }
+  });
+
+  // ── scheduled actions (queue) management ─────────────────────────────────────
+  // List queued/sent actions (most recent first) so the UI can show what's
+  // pending and let the user run/reschedule/delete each one.
+  app.get('/api/queue', async (_req, reply) => {
+    if (!store) return reply.send({ actions: [] });
+    return { actions: store.listActions() };
+  });
+
+  // Run a queued action immediately (dispatch now, mark sent).
+  app.post('/api/queue/:id/run', async (request, reply) => {
+    if (!adminAuthorized(request)) return reply.code(401).send({ error: 'unauthorized' });
+    if (!store || !engine) return reply.code(503).send({ error: 'queue unavailable' });
+    const id = Number((request.params as { id?: string }).id);
+    const action = store.getAction(id);
+    if (!action) return reply.code(404).send({ error: 'action not found' });
+    try {
+      await engine.dispatch(action.actionType, action.payload);
+      store.markSent(id, Date.now());
+      log.info(`Queue: ran action ${id} (${action.actionType}) now.`);
+      return { ok: true };
+    } catch (err: any) {
+      log.warn(`Queue: run action ${id} failed: ${err?.message}`);
+      return reply.code(502).send({ error: err?.message ?? 'dispatch failed' });
+    }
+  });
+
+  // Reschedule a queued action to a new time (ISO timestamp); resets to pending.
+  app.post('/api/queue/:id/reschedule', async (request, reply) => {
+    if (!adminAuthorized(request)) return reply.code(401).send({ error: 'unauthorized' });
+    if (!store) return reply.code(503).send({ error: 'queue unavailable' });
+    const id = Number((request.params as { id?: string }).id);
+    const at = (request.body as { at?: string } | undefined)?.at;
+    const dueAt = at ? Date.parse(at) : NaN;
+    if (Number.isNaN(dueAt)) return reply.code(400).send({ error: 'valid ISO `at` is required' });
+    if (!store.getAction(id)) return reply.code(404).send({ error: 'action not found' });
+    store.rescheduleAction(id, dueAt);
+    return { ok: true, dueAt };
+  });
+
+  // Delete a queued action.
+  app.delete('/api/queue/:id', async (request, reply) => {
+    if (!adminAuthorized(request)) return reply.code(401).send({ error: 'unauthorized' });
+    if (!store) return reply.code(503).send({ error: 'queue unavailable' });
+    const id = Number((request.params as { id?: string }).id);
+    if (!store.getAction(id)) return reply.code(404).send({ error: 'action not found' });
+    store.deleteAction(id);
+    return { ok: true };
   });
 }

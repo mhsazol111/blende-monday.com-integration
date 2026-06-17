@@ -118,6 +118,29 @@ export class SqliteStore implements Store {
       .run(nextDueAt, id);
   }
 
+  // ── queue management (admin UI) ────────────────────────────────────────────
+  listActions(limit = 200): QueuedActionRow[] {
+    const rows = this.db
+      .prepare(`SELECT * FROM queued_actions ORDER BY created_at DESC LIMIT ?`)
+      .all(limit) as any[];
+    return rows.map(rowToQueuedAction);
+  }
+
+  getAction(id: number): QueuedActionRow | null {
+    const row = this.db.prepare(`SELECT * FROM queued_actions WHERE id = ?`).get(id) as any;
+    return row ? rowToQueuedAction(row) : null;
+  }
+
+  rescheduleAction(id: number, dueAt: number): void {
+    this.db
+      .prepare(`UPDATE queued_actions SET due_at = ?, status = 'pending', sent_at = NULL WHERE id = ?`)
+      .run(dueAt, id);
+  }
+
+  deleteAction(id: number): void {
+    this.db.prepare(`DELETE FROM queued_actions WHERE id = ?`).run(id);
+  }
+
   // ── item group state ───────────────────────────────────────────────────────
   getItemEntry(itemId: number): ItemEntry | null {
     const row = this.db.prepare(`SELECT * FROM item_group_state WHERE item_id = ?`).get(itemId) as any;

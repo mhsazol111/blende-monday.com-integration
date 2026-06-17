@@ -51,5 +51,13 @@ export interface Store extends EngineStore {
   retryLater(id: number, nextDueAt: number): void;
   hasProcessedEvent(eventId: string): boolean;
   markProcessedEvent(eventId: string, at: number): void;
+  // ── queue management (admin UI) ──
+  /** Most-recent actions first (all statuses), capped by `limit`. */
+  listActions(limit?: number): QueuedActionRow[];
+  getAction(id: number): QueuedActionRow | null;
+  /** Reschedule a pending/failed/sent action to a new due time (resets to pending). */
+  rescheduleAction(id: number, dueAt: number): void;
+  /** Permanently remove an action row. */
+  deleteAction(id: number): void;
   close(): void;
 }

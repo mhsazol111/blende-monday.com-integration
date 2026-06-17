@@ -115,7 +115,24 @@ debugging CLI `npm run webhooks -- [list|register|delete]` (`src/scripts/webhook
     testing — these are pre-existing, NOT created by this feature; only `change_column_value` is
     missing. **Registration not run on prod** (PHP plugin still live; localhost can't register).
 
-**All offline suites pass: `npm test` → 60 checks (ingress 9, engine 15, queue 14, polish 6,
+**Configurator UX additions (2026-06-17):**
+  - **Scheduled-actions (queue) management** — `GET /api/queue`, `POST /api/queue/:id/run` (dispatch
+    now), `POST /api/queue/:id/reschedule` ({at: ISO}), `DELETE /api/queue/:id`; store methods
+    `listActions`/`getAction`/`rescheduleAction`/`deleteAction`. UI "Scheduled actions" card lists
+    pending/sent with run-now / reschedule / delete. `registerAdmin(app, engine, store)` now takes
+    the store.
+  - **Rich-text messages** — email body & Slack text are authored in a dependency-free
+    contenteditable editor (HTML). `src/util/html.ts` converts: email sends HTML + a plain-text
+    fallback (`htmlToText`); Slack gets mrkdwn (`htmlToSlack`: *bold*, _italic_, `<url|text>`,
+    bullets). Plain-text rules still work unchanged (`looksLikeHtml` guards). `EmailMessage.html`
+    added; engine renders both forms.
+  - **Variable helper** — clickable chips in each editor insert `{{item.name}}`, `{{group.title}}`,
+    `{{status}}`, and `{{column.<id>}}` for every board column (built client-side from the loaded
+    structure; mirrors engine `buildContext`).
+  - **Edit saved rules** — each rule in the list has an "edit" button that reloads it into the
+    builder (trigger/conditions/actions prefilled); re-adding with the same ID overwrites.
+
+**All offline suites pass: `npm test` → 68 checks (ingress 9, engine 18, queue 19, polish 6,
 cutover 9, admin 7).** The legacy PHP plugin is still untouched and live.
 
 **Configurator:** run `npm run dev` (or `npm start`) and open `http://localhost:<PORT>/`. If
