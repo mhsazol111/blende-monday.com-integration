@@ -13,6 +13,7 @@
     "dev": "tsx watch src/index.ts",
     "start": "node dist/index.js",
     "discover": "tsx src/scripts/discover.ts",
+    "webhooks": "tsx src/scripts/webhooks.ts",
     "test:ingress": "tsx src/scripts/test-ingress.ts",
     "test:engine": "tsx src/scripts/test-engine.ts",
     "test:queue": "tsx src/scripts/test-queue.ts",

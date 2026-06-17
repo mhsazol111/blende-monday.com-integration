@@ -4,6 +4,13 @@ import type { FastifyInstance } from 'fastify';
 import { env } from '../config/env.js';
 import { log } from '../util/logger.js';
 import { discoverBoard, getGroupSubitemNames } from '../monday/discovery.js';
+import {
+  listWebhooks,
+  reconcileWebhooks,
+  deleteWebhook,
+  buildWebhookUrl,
+  WEBHOOK_EVENTS,
+} from '../monday/webhooks.js';
 import { saveRules, validateRuleset } from '../rules/loader.js';
 import type { RulesEngine } from '../rules/engine.js';
 import type { Rule } from '../rules/types.js';
@@ -23,6 +30,19 @@ function adminAuthorized(req: { query: unknown; headers: Record<string, unknown>
   if (!expected) return true; // no secret configured → open (dev)
   const fromQuery = (req.query as { secret?: string } | undefined)?.secret;
   return fromQuery === expected || req.headers['x-webhook-secret'] === expected;
+}
+
+/**
+ * The public origin monday should call. Prefer the configured PUBLIC_URL;
+ * otherwise derive it from the request (works behind Traefik/Coolify via the
+ * `x-forwarded-proto`/`host` headers) so the "Connect" button works untouched.
+ */
+function resolvePublicBaseUrl(req: { headers: Record<string, unknown> }): string {
+  if (env.publicUrl) return env.publicUrl;
+  const h = req.headers;
+  const host = String(h['x-forwarded-host'] ?? h['host'] ?? '').split(',')[0].trim();
+  const proto = String(h['x-forwarded-proto'] ?? 'https').split(',')[0].trim();
+  return host ? `${proto}://${host}` : '';
 }
 
 export function registerAdmin(app: FastifyInstance, engine?: RulesEngine): void {
@@ -88,5 +108,60 @@ export function registerAdmin(app: FastifyInstance, engine?: RulesEngine): void 
     engine?.setRules(rules); // hot-reload the running engine
     log.info(`Configurator saved ${rules.length} rule(s); engine reloaded.`);
     return { ok: true, count: rules.length };
+  });
+
+  // ── webhooks (connect a board) ───────────────────────────────────────────────
+  // List the webhooks currently on a board, plus the events this service manages
+  // and whether each is present — drives the "Connected?" status in the UI.
+  app.get('/api/webhooks', async (request, reply) => {
+    const boardId = (request.query as { boardId?: string }).boardId;
+    if (!boardId) return reply.code(400).send({ error: 'boardId is required' });
+    try {
+      const webhooks = await listWebhooks(boardId);
+      const present = new Set(webhooks.map((w) => w.event));
+      const managed = WEBHOOK_EVENTS.map((event) => ({ event, registered: present.has(event) }));
+      const connected = managed.every((m) => m.registered);
+      return { boardId, webhooks, managed, connected };
+    } catch (err: any) {
+      log.warn(`list webhooks failed for board ${boardId}: ${err?.message}`);
+      return reply.code(502).send({ error: err?.message ?? 'failed' });
+    }
+  });
+
+  // Idempotently register the full managed event set on a board (the "Connect"
+  // button). Re-running is safe: it reconciles to exactly one webhook per event.
+  app.post('/api/webhooks/register', async (request, reply) => {
+    if (!adminAuthorized(request)) return reply.code(401).send({ error: 'unauthorized' });
+    const boardId = (request.body as { boardId?: string } | undefined)?.boardId
+      ?? (request.query as { boardId?: string }).boardId;
+    if (!boardId) return reply.code(400).send({ error: 'boardId is required' });
+
+    const base = resolvePublicBaseUrl(request);
+    if (!base) {
+      return reply.code(400).send({
+        error: 'Could not determine the public URL. Set PUBLIC_URL in the environment.',
+      });
+    }
+    const url = buildWebhookUrl(base, env.webhookSharedSecret);
+    try {
+      const result = await reconcileWebhooks(boardId, url);
+      log.info(`Registered ${result.created.length} webhook(s) on board ${boardId} → ${base}`);
+      return { ok: true, ...result };
+    } catch (err: any) {
+      log.warn(`register webhooks failed for board ${boardId}: ${err?.message}`);
+      return reply.code(502).send({ error: err?.message ?? 'failed' });
+    }
+  });
+
+  // Delete a single webhook by id (cleanup / debugging from the UI).
+  app.delete('/api/webhooks/:id', async (request, reply) => {
+    if (!adminAuthorized(request)) return reply.code(401).send({ error: 'unauthorized' });
+    const id = (request.params as { id?: string }).id;
+    if (!id) return reply.code(400).send({ error: 'id is required' });
+    try {
+      return { ok: true, deleted: await deleteWebhook(id) };
+    } catch (err: any) {
+      return reply.code(502).send({ error: err?.message ?? 'failed' });
+    }
   });
 }

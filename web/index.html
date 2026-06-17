@@ -56,6 +56,19 @@
           <p id="boardStatus" class="hint">Not loaded.</p>
         </div>
 
+        <div class="card hidden" id="connectCard">
+          <h2>1½ · Connect this board <span class="hint">(one-time)</span></h2>
+          <p class="hint">
+            This subscribes the board to monday so events reach the automation. You only do this
+            once per board — changing rules later never needs re-connecting.
+          </p>
+          <div class="row" style="margin-top:8px">
+            <div id="connectStatus" class="hint">Checking…</div>
+            <button class="primary" id="connectBtn">Connect</button>
+          </div>
+          <div id="connectEvents" class="hint" style="margin-top:8px"></div>
+        </div>
+
         <div class="card" id="builderCard" style="opacity:.5; pointer-events:none">
           <h2>2 · Build a rule</h2>
 

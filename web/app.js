@@ -84,8 +84,8 @@ const TRIGGERS = [
   { value: 'item_left_group', label: 'Item left the group' },
   { value: 'item_moved', label: 'Item moved to another board/workspace' },
   { value: 'status_changed_to', label: 'Status column changed to…' },
-  { value: 'subitem_checked', label: 'Subitem checked (status →)' },
-  { value: 'all_subitems_checked', label: 'All of these subitems checked (any order)' },
+  { value: 'subitem_checked', label: 'Subitem set (status →)' },
+  { value: 'all_subitems_checked', label: 'All of these subitems set (any order)' },
   { value: 'item_in_group_for_days', label: 'Item in group for N days' },
 ];
 
@@ -380,8 +380,63 @@ async function loadBoard() {
     $('builderCard').style.pointerEvents = 'auto';
     const sb = state.structure.subitemBoard ? `, subitem board ${state.structure.subitemBoard.id}` : '';
     $('boardStatus').innerHTML = `<span class="ok">Loaded "${state.structure.board.name}"</span> — ${state.structure.board.groups.length} groups, ${state.structure.board.columns.length} columns${sb}.`;
+    $('connectCard').classList.remove('hidden');
+    refreshWebhookStatus();
   } catch (err) {
     $('boardStatus').innerHTML = `<span class="err">Failed: ${err.message}</span>`;
+  }
+}
+
+// ── connect board (webhooks) ───────────────────────────────────────────────────
+async function refreshWebhookStatus() {
+  if (!state.boardId) return;
+  const statusEl = $('connectStatus');
+  const eventsEl = $('connectEvents');
+  statusEl.textContent = 'Checking…';
+  eventsEl.textContent = '';
+  try {
+    const res = await fetch('/api/webhooks?boardId=' + encodeURIComponent(state.boardId));
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || res.statusText);
+    if (data.connected) {
+      statusEl.innerHTML = '<span class="ok">✓ Connected</span> — all events registered.';
+      $('connectBtn').textContent = 'Re-connect';
+    } else {
+      const missing = data.managed.filter((m) => !m.registered).length;
+      statusEl.innerHTML = `<span class="err">Not connected</span> — ${missing} of ${data.managed.length} events missing.`;
+      $('connectBtn').textContent = 'Connect';
+    }
+    eventsEl.innerHTML = data.managed
+      .map((m) => `${m.registered ? '✓' : '✗'} ${m.event}`)
+      .join('&nbsp;&nbsp;');
+  } catch (err) {
+    statusEl.innerHTML = `<span class="err">Could not check: ${err.message}</span>`;
+  }
+}
+
+async function connectBoard() {
+  if (!state.boardId) return;
+  const btn = $('connectBtn');
+  btn.disabled = true;
+  $('connectStatus').textContent = 'Connecting…';
+  try {
+    const res = await fetch('/api/webhooks/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-webhook-secret': secret() },
+      body: JSON.stringify({ boardId: state.boardId }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.status === 401) { $('connectStatus').innerHTML = '<span class="err">Unauthorized — append ?secret=YOUR_SECRET to the URL.</span>'; return; }
+    if (!res.ok) throw new Error(data.error || res.statusText);
+    if (data.failed && data.failed.length) {
+      const list = data.failed.map((f) => `${f.event} (${f.error})`).join('; ');
+      $('connectEvents').innerHTML = `<span class="err">Registered ${data.created.length}, but ${data.failed.length} unsupported: ${list}</span>`;
+    }
+  } catch (err) {
+    $('connectStatus').innerHTML = `<span class="err">Failed: ${err.message}</span>`;
+  } finally {
+    btn.disabled = false;
+    refreshWebhookStatus();
   }
 }
 
@@ -416,6 +471,7 @@ function init() {
   $('scopeGroup').addEventListener('change', renderTriggerParams); // refresh subitem list per group
 
   $('loadBoard').addEventListener('click', loadBoard);
+  $('connectBtn').addEventListener('click', connectBoard);
   $('addCondition').addEventListener('click', () => { const r = makeConditionRow(); conditionRows.push(r); $('conditions').appendChild(r.node); });
   $('addAction').addEventListener('click', () => { const r = makeActionRow(); actionRows.push(r); $('actions').appendChild(r.node); });
   $('addRule').addEventListener('click', () => {

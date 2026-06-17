@@ -91,6 +91,23 @@ do not break it.
   fires once when the LAST of `subitemNames[]` reaches the label, in any order, ignoring unrelated
   subitems. Engine: `allSubitemsAtLabel`; UI: multi-subitem picker.
 
+**Webhook self-service added (2026-06-17):** boards are connected to monday from the configurator —
+no manual API calls. `src/monday/webhooks.ts` (list/create/delete + idempotent `reconcileWebhooks`
+over a managed event set), admin routes `GET /api/webhooks`, `POST /api/webhooks/register`,
+`DELETE /api/webhooks/:id` (`src/web/admin.ts`), a "Connect this board" card in the UI, and a
+debugging CLI `npm run webhooks -- [list|register|delete]` (`src/scripts/webhooks.ts`).
+  - **Managed registration events** (WebhookEventType names, NOT payload `type` names):
+    `create_item`, `item_moved_to_any_group`, `change_column_value`, `change_subitem_column_value`,
+    `move_item_to_board`. These cover every trigger; `item_in_group_for_days` needs no webhook.
+  - `register` is idempotent (reconciles to one webhook per event) and per-event resilient (an
+    unsupported event lands in `failed`, the rest still register). The monday API does not return a
+    webhook's URL, so reconcile **deletes + recreates** managed-event hooks at the current URL.
+  - URL = `<PUBLIC_URL or derived-from-request>/webhook?secret=<WEBHOOK_SHARED_SECRET>`. The CLI
+    needs `PUBLIC_URL`; the UI button derives the origin from request headers if `PUBLIC_URL` unset.
+  - Live-verified read path: prod board `18403436566` reports 3/5 managed events already present
+    (`create_item`, `item_moved_to_any_group`, `change_subitem_column_value`); `change_column_value`
+    and `move_item_to_board` missing. **Registration not run on prod** (PHP plugin still live).
+
 **All offline suites pass: `npm test` → 61 checks (ingress 10, engine 15, queue 14, polish 6,
 cutover 9, admin 7).** The legacy PHP plugin is still untouched and live.
 

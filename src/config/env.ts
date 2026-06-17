@@ -34,6 +34,10 @@ export const env = {
   // server
   port: Number(optional('PORT', '3000')),
   webhookSharedSecret: optional('WEBHOOK_SHARED_SECRET'),
+  /** Public HTTPS base URL monday should call (e.g. https://blende-monday.mhsazol.me).
+   *  Used to build the webhook registration URL. If unset, the admin API derives
+   *  it from the incoming request's host/proto headers. */
+  publicUrl: optional('PUBLIC_URL'),
 
   // persistence
   databasePath: optional('DATABASE_PATH', './data/automation.sqlite'),
