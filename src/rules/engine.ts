@@ -98,6 +98,17 @@ export class RulesEngine {
       return result;
     }
 
+    // Moving between groups counts as leaving the old one → clear its pending
+    // actions BEFORE the rule loop enqueues the NEW group's scheduled actions.
+    // (Doing this in onEnteredGroup, after the loop, cancelled the action we'd
+    // just enqueued for the destination group.)
+    if (this.store && event.kind === 'item_entered_group') {
+      const prev = this.store.getItemEntry(itemId);
+      if (prev && prev.groupId !== item.groupId) {
+        result.cleared += this.store.cancelPendingForItem(itemId);
+      }
+    }
+
     // Extra signals some conditions need beyond the hydrated item (e.g. the
     // source group on a move, which only the event carries).
     const evalCtx: ConditionContext = {
@@ -219,11 +230,9 @@ export class RulesEngine {
     const store = this.store!;
     const now = Date.now();
 
-    // Moving between groups counts as leaving the old one → clear its timers.
-    const prev = store.getItemEntry(item.id);
-    if (prev && prev.groupId !== item.groupId) {
-      result.cleared += store.cancelPendingForItem(item.id);
-    }
+    // The clear-on-move happens earlier (before the rule loop) so it doesn't
+    // cancel the destination group's just-enqueued actions. Here we only record
+    // the new entry and arm timed rules.
     store.recordItemEntry(item.id, event.boardId, item.groupId, now);
 
     // Arm `item_in_group_for_days` rules whose scope matches this group.

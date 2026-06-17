@@ -211,6 +211,37 @@ async function main() {
     store.close();
   }
 
+  // I) move A→B clears A's pending but KEEPS B's freshly-scheduled action.
+  //    (Regression: onEnteredGroup's clear-on-move used to run AFTER the rule
+  //    loop, cancelling the destination group's just-enqueued action.)
+  {
+    const rules: Rule[] = [
+      {
+        id: 'a-sched', enabled: true, boardId: BOARD, scope: { groupId: GROUP_A },
+        trigger: { type: 'item_entered_group' },
+        actions: [{ type: 'slack', when: { mode: 'relative', hours: 48 }, text: 'A 48h' }],
+      },
+      {
+        id: 'b-sched', enabled: true, boardId: BOARD, scope: { groupId: GROUP_B },
+        trigger: { type: 'item_entered_group' },
+        actions: [{ type: 'slack', when: { mode: 'relative', hours: 48 }, text: 'B 48h' }],
+      },
+    ];
+    let group = GROUP_A;
+    const { store, engine } = harness(rules, () => group);
+    await engine.handleEvent(entered()); // enters group A → schedules A's 48h
+    check('A scheduled on entry', store.dueActions(future).length === 1);
+    group = GROUP_B;
+    const enteredB: NormalizedEvent = {
+      kind: 'item_entered_group', boardId: BOARD, itemId: 100, groupId: GROUP_B, reason: 'moved', raw: {},
+    };
+    const r = await engine.handleEvent(enteredB); // move A→B
+    const pending = store.dueActions(future);
+    check('move cleared A but kept B (1 pending = B)', r.cleared === 1 && r.scheduled === 1 && pending.length === 1);
+    check("surviving action is B's", (pending[0].payload as SlackMessage).text === 'B 48h');
+    store.close();
+  }
+
   console.log(`\n${passed} checks passed.`);
 }
 

@@ -196,7 +196,17 @@ subitems, queue, connect), scrollable lists with empty states, and **toast** fee
 auto-loads from `/api/config` on open. All rule/condition/action/trigger **serialize shapes are
 unchanged** (saved rules stay compatible). Backend untouched; `node --check` + live serve verified.
 
-**All offline suites pass: `npm test` → 91 checks (ingress 10, engine 38, queue 21, polish 6,
+**Clear-on-move ordering fix (2026-06-17):** moving an item A→B (one `move_pulse_into_group` →
+`item_entered_group`, reason `moved`) cancelled the DESTINATION group's just-enqueued scheduled
+actions. Cause: the auto-clear-on-move lived in `onEnteredGroup`, which runs AFTER the instant rule
+loop — so it enqueued B's 48h action, then `cancelPendingForItem` wiped it along with A's leftovers.
+Fix: the clear-on-move (`prev.groupId !== item.groupId → cancelPendingForItem`) now runs right after
+hydration, BEFORE the rule loop; `onEnteredGroup` only records the new entry + arms timed rules.
+A→B move now clears A's pending but keeps B's freshly-scheduled action. Regression test in
+`test:queue` case I (immediate actions on a create-in-place rule were never affected — that path has
+no prior group entry, which is why a create-in-group rule worked but a move-into-group rule didn't).
+
+**All offline suites pass: `npm test` → 94 checks (ingress 10, engine 38, queue 24, polish 6,
 cutover 9, admin 7).** The legacy PHP plugin is still untouched and live.
 
 **Configurator:** run `npm run dev` (or `npm start`) and open `http://localhost:<PORT>/`. If
