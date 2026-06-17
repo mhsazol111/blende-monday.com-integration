@@ -5,11 +5,13 @@ import type { NormalizedEvent } from '../events/types.js';
 import { hydrateItem, type Hydrator, type ItemContext } from '../monday/hydrate.js';
 import { defaultSenders, type Senders } from '../senders/index.js';
 import { cloneTemplateSubitems, type Cloner } from '../monday/clone.js';
+import { setColumnValue, type ColumnWriter } from '../monday/write.js';
 import type { EngineStore, QueuedActionType } from '../queue/types.js';
 import type { Action, ActionWhen, Condition, Rule, Trigger } from './types.js';
 
 const DAY_MS = 86_400_000;
 const HOUR_MS = 3_600_000;
+const MIN_MS = 60_000;
 
 /**
  * Rules engine (Phases 3–4).
@@ -29,6 +31,7 @@ export interface EngineDeps {
   senders?: Senders;
   store?: EngineStore;
   cloner?: Cloner;
+  columnWriter?: ColumnWriter;
 }
 
 export interface HandleResult {
@@ -47,6 +50,7 @@ export class RulesEngine {
   private readonly senders: Senders;
   private readonly store?: EngineStore;
   private readonly cloner: Cloner;
+  private readonly columnWriter: ColumnWriter;
 
   constructor(deps: EngineDeps) {
     this.rules = deps.rules;
@@ -54,6 +58,7 @@ export class RulesEngine {
     this.senders = deps.senders ?? defaultSenders;
     this.store = deps.store;
     this.cloner = deps.cloner ?? cloneTemplateSubitems;
+    this.columnWriter = deps.columnWriter ?? setColumnValue;
   }
 
   /** Replace the active ruleset (used by the configurator after a save). */
@@ -91,13 +96,19 @@ export class RulesEngine {
       return result;
     }
 
+    // Extra signals some conditions need beyond the hydrated item (e.g. the
+    // source group on a move, which only the event carries).
+    const evalCtx: ConditionContext = {
+      fromGroupId: event.kind === 'item_entered_group' ? event.fromGroupId : undefined,
+    };
+
     // Instant rule matching.
     for (const rule of candidates) {
       if (rule.boardId !== item.boardId) continue; // parent board for subitem events
       if (!scopeMatches(rule, item)) continue;
       if (!triggerDetailsMatch(rule.trigger, event)) continue;
       if (rule.trigger.type === 'all_subitems_checked' && !allSubitemsAtLabel(item, rule.trigger)) continue;
-      if (!conditionsPass(rule.conditions ?? [], item)) continue;
+      if (!conditionsPass(rule.conditions ?? [], item, evalCtx)) continue;
 
       result.matched++;
       const ctx = buildContext(item, event);
@@ -141,6 +152,15 @@ export class RulesEngine {
       return res.action === 'created' ? 'executed' : 'skipped';
     }
 
+    // set_column targeting a subitem: make sure the named subitem exists before
+    // scheduling/sending, so we never enqueue an unwritable action.
+    if (action.type === 'set_column' && action.target === 'subitem') {
+      if (!findSubitemByName(item, action.subitemName)) {
+        log.warn(`[rule ${rule.id}] set_column: subitem "${action.subitemName}" not found on item ${item.id}; skipped.`);
+        return 'skipped';
+      }
+    }
+
     if (action.when.mode !== 'immediate') {
       if (!this.store) {
         log.info(`[rule ${rule.id}] ${action.type} scheduled but no store; deferred.`);
@@ -162,6 +182,9 @@ export class RulesEngine {
     if (actionType === 'email') {
       const p = payload as { to: string[]; subject: string; body: string; html?: string };
       await this.senders.sendEmail(p);
+    } else if (actionType === 'set_column') {
+      const p = payload as { boardId: number; itemId: number; columnId: string; value: string };
+      await this.columnWriter(p);
     } else {
       const p = payload as { webhookUrl: string; text: string };
       await this.senders.sendSlack(p);
@@ -193,6 +216,10 @@ export class RulesEngine {
       const ctx = buildContext(item, event);
       rule.actions.forEach((action, idx) => {
         if (action.type === 'clear_pending' || action.type === 'clone_template_subitems') return;
+        if (action.type === 'set_column' && action.target === 'subitem' && !findSubitemByName(item, action.subitemName)) {
+          log.warn(`[rule ${rule.id}] timed set_column: subitem "${action.subitemName}" not found; skipped.`);
+          return;
+        }
         const { actionType, payload } = renderAction(action, ctx, item);
         store.enqueue({
           itemId: item.id,
@@ -212,7 +239,9 @@ export class RulesEngine {
 // ── timing / rendering ──────────────────────────────────────────────────────
 
 function dueAtFor(when: ActionWhen): number {
-  if (when.mode === 'relative') return Date.now() + (when.days ?? 0) * DAY_MS + (when.hours ?? 0) * HOUR_MS;
+  if (when.mode === 'relative') {
+    return Date.now() + (when.days ?? 0) * DAY_MS + (when.hours ?? 0) * HOUR_MS + (when.minutes ?? 0) * MIN_MS;
+  }
   if (when.mode === 'absolute') {
     const t = Date.parse(when.at);
     if (Number.isNaN(t)) {
@@ -253,7 +282,21 @@ function renderAction(
       },
     };
   }
+  if (action.type === 'set_column') {
+    const value = renderTemplate(action.value, ctx);
+    if (action.target === 'subitem') {
+      const sub = findSubitemByName(item, action.subitemName)!; // existence checked in runAction
+      return { actionType: 'set_column', payload: { boardId: sub.boardId, itemId: sub.id, columnId: action.columnId, value } };
+    }
+    return { actionType: 'set_column', payload: { boardId: item.boardId, itemId: item.id, columnId: action.columnId, value } };
+  }
   throw new Error(`renderAction called with non-sendable action: ${(action as Action).type}`);
+}
+
+/** Find a subitem by (case-insensitive) name on the hydrated item. */
+function findSubitemByName(item: ItemContext, name?: string) {
+  if (!name) return undefined;
+  return item.subitems.find((s) => s.name.toLowerCase() === name.toLowerCase());
 }
 
 /** Combine literal recipients with those resolved from a people column. */
@@ -342,11 +385,17 @@ function scopeMatches(rule: Rule, item: ItemContext): boolean {
   return false;
 }
 
-function conditionsPass(conditions: Condition[], item: ItemContext): boolean {
-  return conditions.every((c) => conditionPass(c, item));
+/** Signals for condition evaluation that aren't on the hydrated item itself. */
+interface ConditionContext {
+  /** Source group when the triggering event was a move (monday sourceGroupId). */
+  fromGroupId?: string;
 }
 
-function conditionPass(c: Condition, item: ItemContext): boolean {
+function conditionsPass(conditions: Condition[], item: ItemContext, ctx: ConditionContext): boolean {
+  return conditions.every((c) => conditionPass(c, item, ctx));
+}
+
+function conditionPass(c: Condition, item: ItemContext, ctx: ConditionContext): boolean {
   switch (c.type) {
     case 'status_is':
       return (item.columns[c.columnId]?.text ?? '') === c.label;
@@ -360,6 +409,8 @@ function conditionPass(c: Condition, item: ItemContext): boolean {
       return (item.columns[c.columnId]?.text ?? '') !== '';
     case 'in_group':
       return item.groupId === c.groupId;
+    case 'moved_from_group':
+      return ctx.fromGroupId === c.groupId;
     case 'subitem_checked':
       return item.subitems.some((s) => {
         if (c.subitemName && s.name.toLowerCase() !== c.subitemName.toLowerCase()) return false;

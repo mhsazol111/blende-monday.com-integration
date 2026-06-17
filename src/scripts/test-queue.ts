@@ -195,6 +195,22 @@ async function main() {
     store.close();
   }
 
+  // H) scheduled set_column with minutes precision is queued (not yet due).
+  {
+    const rule: Rule = {
+      id: 'sc', enabled: true, boardId: BOARD, scope: { groupId: GROUP_A },
+      trigger: { type: 'item_entered_group' },
+      actions: [{ type: 'set_column', when: { mode: 'relative', minutes: 30 }, columnId: 'status', value: '1' }],
+    };
+    const { store, engine } = harness([rule], () => GROUP_A);
+    await engine.handleEvent(entered());
+    const sc = store.listActions().find((a) => a.actionType === 'set_column');
+    const dueInMin = sc ? Math.round((sc.dueAt - Date.now()) / 60_000) : -1;
+    check('set_column scheduled ~30m out (minutes honored)', !!sc && dueInMin >= 29 && dueInMin <= 31);
+    check('scheduled set_column not due now', store.dueActions(Date.now()).every((a) => a.actionType !== 'set_column'));
+    store.close();
+  }
+
   console.log(`\n${passed} checks passed.`);
 }
 

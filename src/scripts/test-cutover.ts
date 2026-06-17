@@ -78,7 +78,7 @@ async function main() {
   // 3) already-applied detection via the source column on a subitem.
   {
     const applied = item({
-      subitems: [{ id: 1, name: 'sub', columns: { [SOURCE_COL]: { text: 'NP Consultation', value: null, type: 'text' } } }],
+      subitems: [{ id: 1, boardId: 0, name: 'sub', columns: { [SOURCE_COL]: { text: 'NP Consultation', value: null, type: 'text' } } }],
     });
     check('detects already-applied template', templateAlreadyApplied(applied, SOURCE_COL, 'NP Consultation'));
     check('detects not-applied template', !templateAlreadyApplied(item(), SOURCE_COL, 'NP Consultation'));

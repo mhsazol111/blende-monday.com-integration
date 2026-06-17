@@ -188,7 +188,7 @@ async function main() {
     ];
     const doneCols = { status: { text: 'Done', value: null, type: 'color' } };
     const notCols = { status: { text: '', value: null, type: 'color' } };
-    const sub = (name: string, done: boolean) => ({ id: 1, name, columns: done ? doneCols : notCols });
+    const sub = (name: string, done: boolean) => ({ id: 1, boardId: SUBITEM_BOARD, name, columns: done ? doneCols : notCols });
     const evtFor = (name: string): NormalizedEvent => ({
       kind: 'subitem_changed', boardId: SUBITEM_BOARD, subitemId: 1, parentItemId: 100,
       columnId: 'status', label: 'Done', value: null, raw: { pulseName: name },
@@ -266,6 +266,65 @@ async function main() {
     check('email keeps HTML body', emails[0].html === '<p>Hi <strong>NP Patient</strong></p>');
     check('email plain-text fallback strips tags', emails[0].body === 'Hi NP Patient');
     check('slack converts HTML to mrkdwn', slacks[0].text === 'See <https://m.co|board> for *NP Patient*');
+  }
+
+  // 9) moved_from_group condition uses the event's sourceGroupId.
+  {
+    const rules: Rule[] = [
+      {
+        id: 'from-intake',
+        enabled: true,
+        boardId: BOARD,
+        scope: { groupId: GROUP },
+        trigger: { type: 'item_entered_group' },
+        conditions: [{ type: 'moved_from_group', groupId: 'group_intake' }],
+        actions: [{ type: 'slack', when: { mode: 'immediate' }, text: 'moved from intake' }],
+      },
+    ];
+    const evt = (from?: string): NormalizedEvent => ({
+      kind: 'item_entered_group', boardId: BOARD, itemId: 100, groupId: GROUP, reason: 'moved', fromGroupId: from, raw: {},
+    });
+    let e = makeEngine(rules, makeItem());
+    await e.engine.handleEvent(evt('group_intake'));
+    check('moved_from_group matches when source group matches', e.slacks.length === 1);
+
+    e = makeEngine(rules, makeItem());
+    await e.engine.handleEvent(evt('group_other'));
+    check('moved_from_group skips when source group differs', e.slacks.length === 0);
+
+    e = makeEngine(rules, makeItem());
+    await e.engine.handleEvent(evt(undefined)); // created in group → no source
+    check('moved_from_group skips on create (no source group)', e.slacks.length === 0);
+  }
+
+  // 10) set_column writes to monday (item + subitem), with subitem-by-name guard.
+  {
+    const SUBITEM_BOARD = 18403436575;
+    const writes: any[] = [];
+    const mk = (rules: Rule[]) =>
+      new RulesEngine({
+        rules,
+        senders: { async sendEmail() {}, async sendSlack() {} },
+        columnWriter: async (a) => { writes.push(a); },
+        hydrate: async () => makeItem({ subitems: [{ id: 55, boardId: SUBITEM_BOARD, name: 'X-ray', columns: {} }] }),
+      });
+    const rule = (over: any): Rule => ({
+      id: 'r', enabled: true, boardId: BOARD, scope: { groupId: GROUP },
+      trigger: { type: 'item_entered_group' },
+      actions: [{ type: 'set_column', when: { mode: 'immediate' }, ...over }],
+    });
+
+    writes.length = 0;
+    await mk([rule({ columnId: 'status', value: '1' })]).handleEvent(entered(100));
+    check('set_column (item) writes item id + value', writes.length === 1 && writes[0].itemId === 100 && writes[0].value === '1');
+
+    writes.length = 0;
+    await mk([rule({ target: 'subitem', subitemName: 'X-ray', columnId: 'status', value: '1' })]).handleEvent(entered(100));
+    check('set_column (subitem) writes subitem id + board', writes.length === 1 && writes[0].itemId === 55 && writes[0].boardId === SUBITEM_BOARD);
+
+    writes.length = 0;
+    const r = await mk([rule({ target: 'subitem', subitemName: 'Missing', columnId: 'status', value: '1' })]).handleEvent(entered(100));
+    check('set_column skips when named subitem absent', writes.length === 0 && r.matched === 1);
   }
 
   console.log(`\n${passed} checks passed.`);

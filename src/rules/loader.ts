@@ -96,6 +96,10 @@ function validateAction(a: Rule['actions'][number]): string | null {
     if ((!a.to || a.to.length === 0) && !a.toFromColumn) return 'email action has no recipients';
   } else if (a.type === 'clone_template_subitems') {
     if (!a.templateSourceColumnId) return 'clone action missing templateSourceColumnId';
+  } else if (a.type === 'set_column') {
+    if (!a.columnId) return 'set_column action missing columnId';
+    if (!a.value?.trim()) return 'set_column action has empty value';
+    if (a.target === 'subitem' && !a.subitemName?.trim()) return 'set_column on a subitem needs subitemName';
   }
   return null;
 }

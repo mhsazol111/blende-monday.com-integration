@@ -13,6 +13,8 @@ export interface ColumnSnapshot {
 
 export interface SubitemSnapshot {
   id: number;
+  /** Subitem board id — needed to write back to a subitem column. */
+  boardId: number;
   name: string;
   columns: Record<string, ColumnSnapshot>;
 }
@@ -43,6 +45,7 @@ const ITEM_QUERY = `
       subitems {
         id
         name
+        board { id }
         column_values { id text value type }
       }
     }
@@ -121,6 +124,7 @@ export const hydrateItem: Hydrator = async (itemId) => {
     columns: indexColumns(item.column_values),
     subitems: (item.subitems ?? []).map((s: any) => ({
       id: Number(s.id),
+      boardId: Number(s.board?.id ?? 0),
       name: s.name ?? '',
       columns: indexColumns(s.column_values),
     })),

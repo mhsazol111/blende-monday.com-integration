@@ -21,6 +21,32 @@
           "text": "{{item.name}}&nbsp;{{status}} {{item.id}}"
         }
       ]
+    },
+    {
+      "id": "item_entered_group-xg4u3",
+      "enabled": true,
+      "boardId": 18403436566,
+      "scope": {
+        "groupId": "group_title"
+      },
+      "trigger": {
+        "type": "item_entered_group"
+      },
+      "actions": [
+        {
+          "type": "slack",
+          "when": {
+            "mode": "immediate"
+          },
+          "text": "{{item.name}}{{item.id}}{{group.title}}"
+        }
+      ],
+      "conditions": [
+        {
+          "type": "moved_from_group",
+          "groupId": "group_mm2wbwep"
+        }
+      ]
     }
   ]
 }

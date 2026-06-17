@@ -70,6 +70,7 @@ export function normalizeEvent(rawEvent: Record<string, unknown>): NormalizedEve
         itemId,
         groupId: str(e.destGroupId ?? e.groupId ?? e.group_id) ?? '',
         reason: 'moved',
+        fromGroupId: str(e.sourceGroupId ?? e.source_group_id ?? e.previousGroupId),
       };
   }
 

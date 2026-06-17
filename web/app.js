@@ -249,6 +249,7 @@ const CONDITIONS = [
   { value: 'column_not_empty', label: 'Column is not empty' },
   { value: 'column_empty', label: 'Column is empty' },
   { value: 'in_group', label: 'Item is in group' },
+  { value: 'moved_from_group', label: 'Item moved from group' },
   { value: 'subitem_checked', label: 'Subitem is checked' },
 ];
 
@@ -279,7 +280,7 @@ function makeConditionRow(init) {
       if (i?.columnId) col.value = i.columnId;
       params.appendChild(col);
       serializeParams = () => ({ columnId: col.value });
-    } else if (t === 'in_group') {
+    } else if (t === 'in_group' || t === 'moved_from_group') {
       const g = select([{ value: '', label: '— group —' }, ...groupOptions()]);
       if (i?.groupId) g.value = i.groupId;
       params.appendChild(g);
@@ -311,9 +312,82 @@ function makeConditionRow(init) {
 const ACTIONS = [
   { value: 'slack', label: 'Send Slack' },
   { value: 'email', label: 'Send email' },
+  { value: 'set_column', label: 'Set a monday value (item/subitem)' },
   { value: 'clear_pending', label: 'Clear pending actions' },
   { value: 'clone_template_subitems', label: 'Clone template subitems' },
 ];
+
+/**
+ * Controls for the set_column action: choose item/subitem target, a column, and
+ * a value. For status/color columns the value is a label dropdown (sends the
+ * label index); other columns get a free-text input (supports {{variables}}).
+ */
+function setColumnControls(init) {
+  let initSubitem = init?.subitemName;
+  let initColumnId = init?.columnId;
+  let initValue = init?.value;
+  const target = select([{ value: 'item', label: 'Item' }, { value: 'subitem', label: 'Subitem' }]);
+  if (init?.target) target.value = init.target;
+
+  const subWrap = el('div');
+  let subPicker = null;
+  const colWrap = el('div');
+  let colSel = null;
+  const valWrap = el('div');
+  let getValue = () => '';
+
+  const colsFor = () => (target.value === 'subitem' ? subCols() : boardCols());
+
+  const renderValue = () => {
+    valWrap.innerHTML = '';
+    const col = colsFor().find((c) => c.id === (colSel && colSel.value));
+    if (col && (col.type === 'status' || col.type === 'color') && col.labels) {
+      const sel = select([{ value: '', label: '— label —' }, ...col.labels.map((l) => ({ value: l.index, label: l.label }))]);
+      if (initValue) sel.value = initValue;
+      valWrap.appendChild(sel);
+      getValue = () => sel.value;
+    } else {
+      const inp = el('input', { placeholder: 'value (supports {{variables}}, e.g. text/number/YYYY-MM-DD)', value: initValue || '' });
+      valWrap.appendChild(inp);
+      getValue = () => inp.value;
+    }
+    initValue = '';
+  };
+  const renderCol = () => {
+    colWrap.innerHTML = '';
+    colSel = select([{ value: '', label: '— column —' }, ...colOptions(colsFor())]);
+    if (initColumnId) colSel.value = initColumnId;
+    colSel.addEventListener('change', renderValue);
+    colWrap.appendChild(colSel);
+    renderValue();
+    initColumnId = '';
+  };
+  const renderSub = () => {
+    subWrap.innerHTML = '';
+    subPicker = null;
+    if (target.value === 'subitem') {
+      subPicker = subitemNamePicker(initSubitem);
+      subWrap.appendChild(el('label', { text: 'Subitem (by name)' }));
+      subWrap.appendChild(subPicker.node);
+      initSubitem = '';
+    }
+  };
+  target.addEventListener('change', () => { renderSub(); renderCol(); });
+  renderSub();
+  renderCol();
+
+  const node = el('div', {}, [
+    el('label', { text: 'Target' }), target, subWrap,
+    el('label', { text: 'Column' }), colWrap,
+    el('label', { text: 'Value' }), valWrap,
+  ]);
+  const serialize = () => {
+    const a = { columnId: colSel ? colSel.value : '', value: getValue() };
+    if (target.value === 'subitem') { a.target = 'subitem'; if (subPicker) a.subitemName = subPicker.serialize(); }
+    return a;
+  };
+  return { node, serialize };
+}
 
 function whenControl(init) {
   const mode = select([
@@ -321,12 +395,11 @@ function whenControl(init) {
     { value: 'relative', label: 'after a delay' },
     { value: 'absolute', label: 'at a specific time' },
   ]);
-  const rel = el('div', { class: 'row hidden' }, [
-    el('input', { type: 'number', min: '0', value: '0' }),
-    el('input', { type: 'number', min: '0', value: '0' }),
-  ]);
-  const relDays = rel.children[0];
-  const relHours = rel.children[1];
+  const relDays = el('input', { type: 'number', min: '0', value: '0' });
+  const relHours = el('input', { type: 'number', min: '0', value: '0' });
+  const relMins = el('input', { type: 'number', min: '0', value: '0' });
+  const field = (label, input) => el('div', {}, [el('label', { text: label }), input]);
+  const rel = el('div', { class: 'row hidden' }, [field('Days', relDays), field('Hours', relHours), field('Minutes', relMins)]);
   const abs = el('input', { type: 'datetime-local', class: 'hidden' });
   const sync = () => {
     rel.classList.toggle('hidden', mode.value !== 'relative');
@@ -335,7 +408,7 @@ function whenControl(init) {
   mode.addEventListener('change', sync);
   if (init && init.mode) {
     mode.value = init.mode;
-    if (init.mode === 'relative') { relDays.value = init.days || 0; relHours.value = init.hours || 0; }
+    if (init.mode === 'relative') { relDays.value = init.days || 0; relHours.value = init.hours || 0; relMins.value = init.minutes || 0; }
     if (init.mode === 'absolute' && init.at) {
       const d = new Date(init.at);
       if (!isNaN(d)) abs.value = new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
@@ -344,7 +417,7 @@ function whenControl(init) {
   }
   const node = el('div', {}, [el('span', { class: 'hint', text: 'When' }), mode, rel, abs]);
   const serialize = () => {
-    if (mode.value === 'relative') return { mode: 'relative', days: Number(relDays.value) || 0, hours: Number(relHours.value) || 0 };
+    if (mode.value === 'relative') return { mode: 'relative', days: Number(relDays.value) || 0, hours: Number(relHours.value) || 0, minutes: Number(relMins.value) || 0 };
     if (mode.value === 'absolute') return { mode: 'absolute', at: abs.value ? new Date(abs.value).toISOString() : '' };
     return { mode: 'immediate' };
   };
@@ -394,6 +467,11 @@ function makeActionRow(init) {
         if (toCol.value) a.toFromColumn = toCol.value;
         return a;
       };
+    } else if (t === 'set_column') {
+      const when = whenControl(i?.when);
+      const sc = setColumnControls(i);
+      params.append(when.node, sc.node);
+      serializeParams = () => ({ when: when.serialize(), ...sc.serialize() });
     } else if (t === 'clone_template_subitems') {
       const grp = el('input', { value: i?.templatesGroupTitle || 'Templates', placeholder: 'Templates group title' });
       const srcCol = select([{ value: '', label: '— subitem source column —' }, ...colOptions(subCols())]);

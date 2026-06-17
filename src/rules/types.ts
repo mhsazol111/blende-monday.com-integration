@@ -6,7 +6,7 @@
 // ── Timing ────────────────────────────────────────────────────────────────
 export type ActionWhen =
   | { mode: 'immediate' }
-  | { mode: 'relative'; days?: number; hours?: number }
+  | { mode: 'relative'; days?: number; hours?: number; minutes?: number }
   | { mode: 'absolute'; at: string }; // ISO-8601
 
 // ── Triggers ─────────────────────────────────────────────────────────────
@@ -29,6 +29,8 @@ export type Condition =
   | { type: 'column_empty'; columnId: string }
   | { type: 'column_not_empty'; columnId: string }
   | { type: 'in_group'; groupId: string }
+  // True when the item was just moved OUT of `groupId` (uses monday's sourceGroupId).
+  | { type: 'moved_from_group'; groupId: string }
   | { type: 'subitem_checked'; columnId: string; label: string; subitemName?: string };
 
 // ── Actions ─────────────────────────────────────────────────────────────────
@@ -64,11 +66,29 @@ export interface CloneTemplateSubitemsAction {
   templateSourceColumnId: string;
 }
 
+/**
+ * Write a value back to monday (the item or one of its subitems). Uses
+ * `change_simple_column_value`, so `value` is a simple string: the label INDEX
+ * for status/color columns, otherwise the literal text/number/date. Supports
+ * `{{templating}}`. Can be immediate or scheduled (via `when`).
+ */
+export interface SetColumnAction {
+  type: 'set_column';
+  when: ActionWhen;
+  /** 'item' (default) writes the item's column; 'subitem' writes a named subitem's column. */
+  target?: 'item' | 'subitem';
+  /** Required when target='subitem': the subitem to update, matched by name. */
+  subitemName?: string;
+  columnId: string;
+  value: string;
+}
+
 export type Action =
   | EmailAction
   | SlackAction
   | ClearPendingAction
-  | CloneTemplateSubitemsAction;
+  | CloneTemplateSubitemsAction
+  | SetColumnAction;
 
 // ── Rule ────────────────────────────────────────────────────────────────────
 export interface RuleScope {

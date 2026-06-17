@@ -34,10 +34,14 @@ async function main() {
   const created = normalizeEvent({ type: 'create_pulse', boardId: BOARD, pulseId: 1, groupId: 'group_x' });
   check('create_pulse → item_entered_group/created', created.kind === 'item_entered_group');
 
-  const moved = normalizeEvent({ type: 'move_pulse_into_group', boardId: BOARD, pulseId: 2, groupId: 'group_y' });
+  const moved = normalizeEvent({ type: 'move_pulse_into_group', boardId: BOARD, pulseId: 2, destGroupId: 'group_y', sourceGroupId: 'group_x' });
   check(
     'move_pulse_into_group → item_entered_group/moved',
     moved.kind === 'item_entered_group' && moved.reason === 'moved',
+  );
+  check(
+    'move captures sourceGroupId → fromGroupId',
+    moved.kind === 'item_entered_group' && moved.groupId === 'group_y' && moved.fromGroupId === 'group_x',
   );
 
   const status = normalizeEvent({

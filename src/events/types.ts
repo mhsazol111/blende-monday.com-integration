@@ -22,6 +22,8 @@ export interface ItemEnteredGroupEvent extends BaseEvent {
   itemId: number;
   groupId: string;
   reason: 'created' | 'moved';
+  /** Source group on a move (monday's `sourceGroupId`); absent on create. */
+  fromGroupId?: string;
 }
 
 /** Item moved out of a group (best-effort; previous group not always present). */

@@ -132,7 +132,21 @@ debugging CLI `npm run webhooks -- [list|register|delete]` (`src/scripts/webhook
   - **Edit saved rules** — each rule in the list has an "edit" button that reloads it into the
     builder (trigger/conditions/actions prefilled); re-adding with the same ID overwrites.
 
-**All offline suites pass: `npm test` → 68 checks (ingress 9, engine 18, queue 19, polish 6,
+**`moved_from_group` condition (2026-06-17):** monday's `move_pulse_into_group` payload carries
+`sourceGroupId` (verified via `/api/last-events`); the normalizer maps it to
+`ItemEnteredGroupEvent.fromGroupId`, and the engine evaluates `moved_from_group` against it via a
+`ConditionContext`. Catches a specific transition (e.g. NP Intake → New HPSM) reliably, even on a
+first move (no DB history needed).
+
+**`set_column` write-back + minutes scheduling (2026-06-17):** new `set_column` action writes to
+monday via `change_simple_column_value` (`src/monday/write.ts`, injectable `ColumnWriter` on the
+engine; `QueuedActionType` gained `set_column` so it schedules through the queue/worker). Targets the
+item or a named subitem (subitem hydration now carries `boardId`; missing subitem → skipped, never
+enqueued). The `when` relative mode gained **minutes** (UI inputs now labelled Days/Hours/Minutes).
+UI: "Set a monday value" action with item/subitem target, column picker, and a label-index dropdown
+for status columns (free text otherwise).
+
+**All offline suites pass: `npm test` → 77 checks (ingress 10, engine 24, queue 21, polish 6,
 cutover 9, admin 7).** The legacy PHP plugin is still untouched and live.
 
 **Configurator:** run `npm run dev` (or `npm start`) and open `http://localhost:<PORT>/`. If
@@ -191,15 +205,20 @@ A rule = one **trigger** + zero-or-more AND **conditions** + one-or-more **actio
 
 ### Conditions (AND-combined)
 `subitem_checked` (other named subitems also checked) · `status_is` / `status_is_not` ·
-`column_equals` / `column_empty` / `column_not_empty` · `in_group`.
+`column_equals` / `column_empty` / `column_not_empty` · `in_group` · `moved_from_group` (true when
+the move's `sourceGroupId` matches — pairs with `item_entered_group` to catch a specific transition).
 
 ### Actions
-- `email` — `to` (literal list) and/or `to_from_column` (people/email column), `subject`, `body`, `when`.
-- `slack` — `text`, channel/webhook, `when`.
+- `email` — `to` (literal list) and/or `to_from_column` (people/email column), `subject`, `body` (rich HTML), `when`.
+- `slack` — `text` (rich HTML → mrkdwn), channel/webhook, `when`.
 - `clear_pending` — cancel all pending scheduled actions for the item.
-- _Reserved for later:_ `post_update`, `set_column`, `create_subitems` (folds the cloner in).
+- `clone_template_subitems` — clone subitems from the matching Templates item (ported PHP cloner).
+- `set_column` — write a value back to monday (`change_simple_column_value`): item or a named
+  subitem; status uses the label **index**, other columns take text/number/date; supports `when`
+  (so a delayed Slack + a status flip can fire together) and `{{templating}}` on the value.
+- _Reserved for later:_ `post_update`, `create_subitems`.
 
-`when`: `immediate` | `relative` (`+N days/hours`) | `absolute` (ISO timestamp).
+`when`: `immediate` | `relative` (`+N days/hours/minutes`) | `absolute` (ISO timestamp).
 
 ### Behavioral defaults (decided)
 1. **N-days** = calendar days, counted from when the item **entered the group** (not creation).
