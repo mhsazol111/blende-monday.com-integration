@@ -146,7 +146,20 @@ enqueued). The `when` relative mode gained **minutes** (UI inputs now labelled D
 UI: "Set a monday value" action with item/subitem target, column picker, and a label-index dropdown
 for status columns (free text otherwise).
 
-**All offline suites pass: `npm test` → 77 checks (ingress 10, engine 24, queue 21, polish 6,
+**Action isolation (2026-06-17):** the engine's per-rule action loop now runs each action in its own
+try/catch — a throwing action (e.g. a Slack webhook returning non-200) no longer aborts the
+remaining actions or other matched rules. Failures are logged (`[rule X] action "Y" failed`) and
+counted in `HandleResult.failed`. (Found while debugging "subitem set_column not updating": a
+`[clone, slack, set_column]` rule was aborting before `set_column` when an earlier action threw.)
+
+**Re-hydrate after clone (2026-06-17):** within a rule, after a `clone_template_subitems` action
+returns `executed` (created subitems), the engine re-hydrates the item so subsequent actions see the
+new subitems. This makes the common `[clone_template_subitems, …, set_column(subitem)]` pattern work
+on freshly-created items (previously the set_column used the pre-clone snapshot and skipped). A time
+delay does NOT solve this — the subitem is resolved at event time from the snapshot, not at send
+time — so re-hydration is the correct fix.
+
+**All offline suites pass: `npm test` → 79 checks (ingress 10, engine 26, queue 21, polish 6,
 cutover 9, admin 7).** The legacy PHP plugin is still untouched and live.
 
 **Configurator:** run `npm run dev` (or `npm start`) and open `http://localhost:<PORT>/`. If

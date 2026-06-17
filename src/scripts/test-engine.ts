@@ -327,6 +327,54 @@ async function main() {
     check('set_column skips when named subitem absent', writes.length === 0 && r.matched === 1);
   }
 
+  // 11) action isolation: a throwing action must not abort the rest of the rule.
+  {
+    const writes: any[] = [];
+    const engine = new RulesEngine({
+      rules: [
+        {
+          id: 'iso', enabled: true, boardId: BOARD, scope: { groupId: GROUP },
+          trigger: { type: 'item_entered_group' },
+          actions: [
+            { type: 'slack', when: { mode: 'immediate' }, text: 'boom' },
+            { type: 'set_column', when: { mode: 'immediate' }, columnId: 'status', value: '1' },
+          ],
+        },
+      ],
+      senders: { async sendEmail() {}, async sendSlack() { throw new Error('slack down'); } },
+      columnWriter: async (a) => { writes.push(a); },
+      hydrate: async () => makeItem(),
+    });
+    const r = await engine.handleEvent(entered(100));
+    check('failing slack does not block following set_column', writes.length === 1 && r.failed === 1);
+  }
+
+  // 12) clone → set_column on a just-cloned subitem: re-hydrate after clone.
+  {
+    let calls = 0;
+    const writes: any[] = [];
+    const before = makeItem({ subitems: [] });
+    const after = makeItem({ subitems: [{ id: 77, boardId: 18403436575, name: 'New subitem', columns: {} }] });
+    const engine = new RulesEngine({
+      rules: [
+        {
+          id: 'clone-set', enabled: true, boardId: BOARD, scope: { groupId: GROUP },
+          trigger: { type: 'item_entered_group' },
+          actions: [
+            { type: 'clone_template_subitems', templatesGroupTitle: 'Templates', templateSourceColumnId: 'text_x' },
+            { type: 'set_column', when: { mode: 'immediate' }, target: 'subitem', subitemName: 'New subitem', columnId: 'status', value: '1' },
+          ],
+        },
+      ],
+      senders: { async sendEmail() {}, async sendSlack() {} },
+      columnWriter: async (a) => { writes.push(a); },
+      cloner: async () => ({ action: 'created', created: 1 }),
+      hydrate: async () => (++calls === 1 ? before : after),
+    });
+    await engine.handleEvent(entered(100));
+    check('clone re-hydrates so set_column finds the new subitem', writes.length === 1 && writes[0].itemId === 77);
+  }
+
   console.log(`\n${passed} checks passed.`);
 }
 

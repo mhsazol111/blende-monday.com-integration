@@ -40,6 +40,8 @@ export interface HandleResult {
   scheduled: number;
   cleared: number;
   deferred: number;
+  /** Actions that threw (isolated so they don't abort the rest). */
+  failed: number;
 }
 
 type ActionOutcome = 'executed' | 'scheduled' | 'cleared' | 'deferred' | 'skipped';
@@ -67,7 +69,7 @@ export class RulesEngine {
   }
 
   async handleEvent(event: NormalizedEvent): Promise<HandleResult> {
-    const result: HandleResult = { matched: 0, executed: 0, scheduled: 0, cleared: 0, deferred: 0 };
+    const result: HandleResult = { matched: 0, executed: 0, scheduled: 0, cleared: 0, deferred: 0, failed: 0 };
 
     const itemId = itemIdToHydrate(event);
     if (itemId === undefined) return result;
@@ -111,10 +113,27 @@ export class RulesEngine {
       if (!conditionsPass(rule.conditions ?? [], item, evalCtx)) continue;
 
       result.matched++;
-      const ctx = buildContext(item, event);
+      // Per-rule working copy: a clone action that creates subitems refreshes
+      // this so later actions (e.g. set_column on a just-cloned subitem) see them.
+      let curItem = item;
+      let ctx = buildContext(curItem, event);
       for (const action of rule.actions) {
-        const outcome = await this.runAction(rule, item, action, ctx);
-        bump(result, outcome);
+        // Isolate actions: one failing action (e.g. a bad Slack webhook) must not
+        // abort the rest of the rule's actions or other matched rules.
+        try {
+          const outcome = await this.runAction(rule, curItem, action, ctx);
+          bump(result, outcome);
+          // Re-hydrate after a clone that created subitems so subsequent actions
+          // in this rule operate on the fresh subitem list (fixes clone→set_column
+          // in one rule, where the original snapshot predates the new subitems).
+          if (action.type === 'clone_template_subitems' && outcome === 'executed') {
+            const fresh = await this.hydrate(curItem.id);
+            if (fresh) { curItem = fresh; ctx = buildContext(curItem, event); }
+          }
+        } catch (err) {
+          result.failed++;
+          log.error(`[rule ${rule.id}] action "${action.type}" failed`, err);
+        }
       }
     }
 
