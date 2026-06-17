@@ -47,11 +47,20 @@ function resolvePublicBaseUrl(req: { headers: Record<string, unknown> }): string
 
 export function registerAdmin(app: FastifyInstance, engine?: RulesEngine): void {
   // ── static UI ──────────────────────────────────────────────────────────────
+  // `no-store` so the app shell is never cached by browsers or the CDN
+  // (Cloudflare) — otherwise a deploy ships new code but stale assets keep being
+  // served from the edge. It's a tiny admin UI, so there's no perf cost.
   app.get('/', async (_req, reply) => {
-    reply.type('text/html').send(await readFile(resolve(WEB_DIR, 'index.html'), 'utf8'));
+    reply
+      .type('text/html')
+      .header('Cache-Control', 'no-store')
+      .send(await readFile(resolve(WEB_DIR, 'index.html'), 'utf8'));
   });
   app.get('/app.js', async (_req, reply) => {
-    reply.type('application/javascript').send(await readFile(resolve(WEB_DIR, 'app.js'), 'utf8'));
+    reply
+      .type('application/javascript')
+      .header('Cache-Control', 'no-store')
+      .send(await readFile(resolve(WEB_DIR, 'app.js'), 'utf8'));
   });
 
   // ── API ─────────────────────────────────────────────────────────────────────
