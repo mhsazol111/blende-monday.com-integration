@@ -581,10 +581,16 @@ function makeActionRow(init) {
   typeSel.addEventListener('change', render);
   render();
 
-  const remove = el('button', { class: 'danger', text: '✕', onclick: () => removeRow(actionRows, row) });
-  const node = el('div', { class: 'subform' }, [el('div', { class: 'row' }, [typeSel, remove]), params]);
-  const row = { node, serialize: () => ({ type: typeSel.value, ...serializeParams() }) };
+  const num = el('span', { class: 'num' });
+  const remove = el('button', { class: 'danger', text: '✕', onclick: () => { removeRow(actionRows, row); renumberActions(); } });
+  const node = el('div', { class: 'subform' }, [el('div', { class: 'row' }, [num, typeSel, remove]), params]);
+  const row = { node, serialize: () => ({ type: typeSel.value, ...serializeParams() }), setNum: (n) => { num.textContent = 'Action ' + n; } };
   return row;
+}
+
+/** Re-label the action boxes "Action 1, 2, …" after add/remove/load. */
+function renumberActions() {
+  actionRows.forEach((r, i) => r.setNum && r.setNum(i + 1));
 }
 
 function removeRow(arr, row) {
@@ -703,6 +709,7 @@ function loadRuleIntoBuilder(rule) {
   actionRows.length = 0;
   $('actions').innerHTML = '';
   (rule.actions || []).forEach((a) => { const row = makeActionRow(a); actionRows.push(row); $('actions').appendChild(row.node); });
+  renumberActions();
 
   $('builderCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
   toast(`Editing "${rule.id}" — change fields, then Save rule (same ID overwrites).`, 'ok');
@@ -881,7 +888,7 @@ function init() {
   $('refreshQueue').addEventListener('click', loadQueue);
   $('genRuleId').addEventListener('click', () => { $('ruleId').value = generateRuleId(); });
   $('addCondition').addEventListener('click', () => { const r = makeConditionRow(); conditionRows.push(r); $('conditions').appendChild(r.node); });
-  $('addAction').addEventListener('click', () => { const r = makeActionRow(); actionRows.push(r); $('actions').appendChild(r.node); });
+  $('addAction').addEventListener('click', () => { const r = makeActionRow(); actionRows.push(r); $('actions').appendChild(r.node); renumberActions(); });
   $('saveRule').addEventListener('click', saveRule);
   $('applyJson').addEventListener('click', applyAndSaveJson);
 
