@@ -241,7 +241,10 @@ export class RulesEngine {
       if (rule.trigger.type !== 'item_in_group_for_days') continue;
       if (!scopeMatches(rule, item)) continue;
 
-      const dueAt = now + rule.trigger.days * DAY_MS;
+      // The N-days mark is the base; each action's own `when` layers on top of it
+      // (immediate → fire at N days; relative/relative_from_column → N days + that
+      // delay; absolute → its own timestamp).
+      const base = now + rule.trigger.days * DAY_MS;
       const ctx = buildContext(item, event);
       rule.actions.forEach((action, idx) => {
         if (action.type === 'clear_pending' || action.type === 'clone_template_subitems') return;
@@ -255,27 +258,32 @@ export class RulesEngine {
           ruleId: rule.id,
           actionType,
           payload,
-          dueAt,
+          dueAt: dueAtFor(action.when, item, base),
           dedupeKey: `timed:${rule.id}:${item.id}:${now}:${idx}`,
         });
         result.scheduled++;
       });
-      log.info(`[rule ${rule.id}] armed for item ${item.id}, due ${new Date(dueAt).toISOString()}.`);
+      log.info(`[rule ${rule.id}] armed for item ${item.id}, base due ${new Date(base).toISOString()}.`);
     }
   }
 }
 
 // ── timing / rendering ──────────────────────────────────────────────────────
 
-function dueAtFor(when: ActionWhen, item: ItemContext): number {
+/**
+ * Compute when an action is due. `base` is the reference time the delay is added
+ * to (defaults to now; the timed `item_in_group_for_days` path passes the N-days
+ * mark so an action's `when` layers on top). `absolute` ignores `base`.
+ */
+function dueAtFor(when: ActionWhen, item: ItemContext, base: number = Date.now()): number {
   if (when.mode === 'relative') {
-    return Date.now() + (when.days ?? 0) * DAY_MS + (when.hours ?? 0) * HOUR_MS + (when.minutes ?? 0) * MIN_MS;
+    return base + (when.days ?? 0) * DAY_MS + (when.hours ?? 0) * HOUR_MS + (when.minutes ?? 0) * MIN_MS;
   }
   if (when.mode === 'absolute') {
     const t = Date.parse(when.at);
     if (Number.isNaN(t)) {
       log.warn(`Invalid absolute time "${when.at}"; sending immediately.`);
-      return Date.now();
+      return base;
     }
     return t;
   }
@@ -287,12 +295,12 @@ function dueAtFor(when: ActionWhen, item: ItemContext): number {
     const n = Number.parseFloat(String(source ?? '').trim());
     if (!Number.isFinite(n)) {
       log.warn(`relative_from_column: column "${when.columnId}" value "${source ?? ''}" is not a number; sending immediately.`);
-      return Date.now();
+      return base;
     }
     const unitMs = when.unit === 'days' ? DAY_MS : when.unit === 'hours' ? HOUR_MS : MIN_MS;
-    return Date.now() + n * unitMs;
+    return base + n * unitMs;
   }
-  return Date.now();
+  return base;
 }
 
 function renderAction(

@@ -247,14 +247,19 @@ configurator/engine features.
     so a generated message can be stashed in a column for manual reuse. Status/color columns keep the
     label-index `<select>`. No schema change.
   - **Delay from a column:** new `ActionWhen` mode `relative_from_column` (`target`/`subitemName`/
-    `columnId`/`unit`). `dueAtFor(when, item)` reads the hydrated item/subitem column number ×
-    unit (days/hours/minutes) at event time; NaN/missing → immediate (warn). UI: 4th "after a delay
-    from a column value" mode in `whenControl`. Loader validates the new mode.
+    `columnId`/`unit`). `dueAtFor(when, item, base)` reads the hydrated item/subitem column number ×
+    unit (days/hours/minutes) at event time; NaN/missing → `base` (warn). UI: 4th "after a delay
+    from a column value" mode in `whenControl`, whose column picker is filtered to **number/dropdown**
+    columns (the saved column stays visible when editing). Loader validates the new mode.
+  - **Timed rules honor an action's `when`:** `dueAtFor` now takes a `base`; the
+    `item_in_group_for_days` path passes the N-days mark as the base, so an action's `when` **layers
+    on top** (immediate → fires at N days; relative / relative_from_column → N days + that delay;
+    absolute → its own timestamp). Previously the timed path forced every action to exactly N days.
   - Verified: `npm run test:engine` extended (+14 → 52 checks: OR groups, template if/else+nesting,
     set_column plain-text, relative_from_column timing); live PUT/GET round-trip of a rule using all
     new shapes succeeds.
 
-**All offline suites pass: `npm test` → 120 checks (ingress 10, engine 52, queue 24, polish 6,
+**All offline suites pass: `npm test` → 122 checks (ingress 10, engine 54, queue 24, polish 6,
 cutover 9, admin 7, exchange 12).** The legacy PHP plugin is still untouched and live.
 
 **Configurator:** run `npm run dev` (or `npm start`) and open `http://localhost:<PORT>/`. If

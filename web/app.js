@@ -577,10 +577,17 @@ function whenControl(init) {
   const colUnit = select([{ value: 'days', label: 'Days' }, { value: 'hours', label: 'Hours' }, { value: 'minutes', label: 'Minutes' }]);
   let initColId = init?.mode === 'relative_from_column' ? init.columnId : '';
   let initColSub = init?.mode === 'relative_from_column' ? init.subitemName : '';
-  const colColsFor = () => (colTarget.value === 'subitem' ? subCols() : boardCols());
+  // Only number/dropdown columns make sense as a delay source (their text is a
+  // number); keep the saved column visible even if its type isn't in the list.
+  const colColsFor = () => {
+    const all = colTarget.value === 'subitem' ? subCols() : boardCols();
+    return all.filter((c) => ['numbers', 'numeric', 'dropdown'].includes(c.type) || c.id === initColId);
+  };
   const renderColCombo = () => {
     colColWrap.innerHTML = '';
-    colCombo = combo([{ value: '', label: '— column (holds a number) —' }, ...colOptions(colColsFor())], { placeholder: '— column —', value: initColId || '' });
+    const opts = colOptions(colColsFor());
+    const placeholder = opts.length ? '— number/dropdown column —' : '— no number/dropdown column on this board —';
+    colCombo = combo([{ value: '', label: placeholder }, ...opts], { placeholder, value: initColId || '' });
     colColWrap.appendChild(colCombo.node);
     initColId = '';
   };

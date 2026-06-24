@@ -565,6 +565,38 @@ async function main() {
     check('relative_from_column: non-numeric value → immediate', enq.length === 1 && Math.abs(enq[0].dueAt - before3) < 5_000);
   }
 
+  // 21) timed rule (item_in_group_for_days): an action's `when` layers on the N-days base.
+  {
+    const enq: QueueEntry[] = [];
+    const store: EngineStore = {
+      enqueue: (e) => enq.push(e),
+      cancelPendingForItem: () => 0,
+      getItemEntry: () => null,
+      recordItemEntry: () => {},
+      clearItemEntry: () => {},
+    };
+    const item = makeItem({ columns: { status: { text: 'x', value: null, type: 'color' }, num: { text: '2', value: null, type: 'numbers' } } });
+    const mk = (when: any) =>
+      new RulesEngine({
+        rules: [{ id: 'timed', enabled: true, boardId: BOARD, scope: { groupId: GROUP },
+          trigger: { type: 'item_in_group_for_days', days: 7 },
+          actions: [{ type: 'slack', when, text: 'nag' }] }],
+        senders: { async sendEmail() {}, async sendSlack() {} },
+        store,
+        hydrate: async () => item,
+      });
+
+    enq.length = 0;
+    let before = Date.now();
+    await mk({ mode: 'immediate' }).handleEvent(entered(100));
+    check('timed + immediate → due at N-days base', enq.length === 1 && Math.abs(enq[0].dueAt - (before + 7 * 86_400_000)) < 5_000);
+
+    enq.length = 0;
+    before = Date.now();
+    await mk({ mode: 'relative_from_column', columnId: 'num', unit: 'days' }).handleEvent(entered(100));
+    check('timed + relative_from_column → N-days + column delay', enq.length === 1 && Math.abs(enq[0].dueAt - (before + 9 * 86_400_000)) < 5_000);
+  }
+
   console.log(`\n${passed} checks passed.`);
 }
 
