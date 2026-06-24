@@ -718,11 +718,21 @@ function removeRow(arr, row) {
 }
 
 // ── assemble + persist ───────────────────────────────────────────────────────
+function slugify(s) {
+  return String(s).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 24);
+}
+
 function generateRuleId() {
   const type = ($('triggerType') && $('triggerType').value) || 'rule';
+  const groupId = scopeGroupCombo ? scopeGroupCombo.value : '';
+  const title = state.structure?.board?.groups?.find((g) => g.id === groupId)?.title;
+  const groupSlug = title ? slugify(title) : '';
   const existing = new Set(state.ruleset.rules.map((r) => r.id));
   let id;
-  do { id = `${type}-${Math.random().toString(36).slice(2, 7)}`; } while (existing.has(id));
+  do {
+    const rand = Math.random().toString(36).slice(2, 7);
+    id = (groupSlug ? `${groupSlug}-` : '') + `${type}-${rand}`;
+  } while (existing.has(id));
   return id;
 }
 
