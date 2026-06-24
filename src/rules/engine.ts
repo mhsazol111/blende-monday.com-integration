@@ -122,7 +122,7 @@ export class RulesEngine {
       if (!triggerDetailsMatch(rule.trigger, event)) continue;
       if (rule.trigger.type === 'all_subitems_checked' && !allSubitemsAtLabel(item, rule.trigger)) continue;
       if (rule.trigger.type === 'item_column_changed' && !itemColumnMatches(item, rule.trigger)) continue;
-      if (!conditionsPass(rule.conditions ?? [], item, evalCtx)) continue;
+      if (!conditionsPass(rule, item, evalCtx)) continue;
 
       result.matched++;
       // Per-rule working copy: a clone action that creates subitems refreshes
@@ -198,7 +198,7 @@ export class RulesEngine {
         return 'deferred';
       }
       const { actionType, payload } = renderAction(action, ctx, item);
-      const dueAt = dueAtFor(action.when);
+      const dueAt = dueAtFor(action.when, item);
       this.store.enqueue({ itemId: item.id, ruleId: rule.id, actionType, payload, dueAt });
       log.info(`[rule ${rule.id}] ${action.type} scheduled for ${new Date(dueAt).toISOString()}.`);
       return 'scheduled';
@@ -267,7 +267,7 @@ export class RulesEngine {
 
 // ── timing / rendering ──────────────────────────────────────────────────────
 
-function dueAtFor(when: ActionWhen): number {
+function dueAtFor(when: ActionWhen, item: ItemContext): number {
   if (when.mode === 'relative') {
     return Date.now() + (when.days ?? 0) * DAY_MS + (when.hours ?? 0) * HOUR_MS + (when.minutes ?? 0) * MIN_MS;
   }
@@ -278,6 +278,19 @@ function dueAtFor(when: ActionWhen): number {
       return Date.now();
     }
     return t;
+  }
+  if (when.mode === 'relative_from_column') {
+    const source =
+      when.target === 'subitem'
+        ? findSubitemByName(item, when.subitemName)?.columns[when.columnId]?.text
+        : item.columns[when.columnId]?.text;
+    const n = Number.parseFloat(String(source ?? '').trim());
+    if (!Number.isFinite(n)) {
+      log.warn(`relative_from_column: column "${when.columnId}" value "${source ?? ''}" is not a number; sending immediately.`);
+      return Date.now();
+    }
+    const unitMs = when.unit === 'days' ? DAY_MS : when.unit === 'hours' ? HOUR_MS : MIN_MS;
+    return Date.now() + n * unitMs;
   }
   return Date.now();
 }
@@ -312,7 +325,11 @@ function renderAction(
     };
   }
   if (action.type === 'set_column') {
-    const value = renderTemplate(action.value, ctx);
+    // The value may be rich HTML authored in the configurator (to stash a
+    // generated message in a column for manual reuse). monday columns store
+    // plain text, so flatten HTML; label-index numbers and plain values pass through.
+    const rendered = renderTemplate(action.value, ctx);
+    const value = looksLikeHtml(rendered) ? htmlToText(rendered) : rendered;
     if (action.target === 'subitem') {
       const sub = findSubitemByName(item, action.subitemName)!; // existence checked in runAction
       return { actionType: 'set_column', payload: { boardId: sub.boardId, itemId: sub.id, columnId: action.columnId, value } };
@@ -461,8 +478,19 @@ interface ConditionContext {
   fromGroupId?: string;
 }
 
-function conditionsPass(conditions: Condition[], item: ItemContext, ctx: ConditionContext): boolean {
-  return conditions.every((c) => conditionPass(c, item, ctx));
+/**
+ * A rule matches when ANY of its condition groups passes (OR); within a group,
+ * ALL conditions must pass (AND). Legacy flat `rule.conditions` is treated as a
+ * single AND group. No groups/conditions at all → passes.
+ */
+function conditionsPass(rule: Rule, item: ItemContext, ctx: ConditionContext): boolean {
+  const groups: Condition[][] = rule.conditionGroups?.length
+    ? rule.conditionGroups.map((g) => g.conditions ?? [])
+    : rule.conditions?.length
+      ? [rule.conditions]
+      : [];
+  if (groups.length === 0) return true;
+  return groups.some((conds) => conds.every((c) => conditionPass(c, item, ctx)));
 }
 
 function conditionPass(c: Condition, item: ItemContext, ctx: ConditionContext): boolean {

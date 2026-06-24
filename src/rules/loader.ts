@@ -82,6 +82,12 @@ export function validateRule(r: Rule): string | null {
   if (!r.scope || (!r.scope.groupId && !r.scope.groupTitleContains)) {
     return 'scope must set groupId or groupTitleContains';
   }
+  if (r.conditionGroups !== undefined) {
+    if (!Array.isArray(r.conditionGroups)) return 'conditionGroups must be an array';
+    for (const g of r.conditionGroups as any[]) {
+      if (!g || !Array.isArray(g.conditions)) return 'each condition group needs a conditions array';
+    }
+  }
   if (!Array.isArray(r.actions) || r.actions.length === 0) return 'no actions';
   for (const a of r.actions) {
     const problem = validateAction(a);
@@ -103,6 +109,14 @@ function validateAction(a: Rule['actions'][number]): string | null {
     if (!a.columnId) return 'set_column action missing columnId';
     if (!a.value?.trim()) return 'set_column action has empty value';
     if (a.target === 'subitem' && !a.subitemName?.trim()) return 'set_column on a subitem needs subitemName';
+  }
+  if ('when' in a && a.when) {
+    const w: any = a.when;
+    if (w.mode === 'relative_from_column') {
+      if (!w.columnId) return `${a.type} delay-from-column needs a columnId`;
+      if (!['days', 'hours', 'minutes'].includes(w.unit)) return `${a.type} delay-from-column needs unit days|hours|minutes`;
+      if (w.target === 'subitem' && !w.subitemName?.trim()) return `${a.type} delay-from-column on a subitem needs subitemName`;
+    }
   }
   return null;
 }

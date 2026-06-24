@@ -146,7 +146,16 @@ function richEditor(initialHtml, placeholder) {
       el('span', { class: 'chip', title: v.hint || '', text: v.token,
         onmousedown: (e) => { e.preventDefault(); insertAtCaret(v.token); } })));
 
-  const node = el('div', {}, [toolbar, editor, source, el('div', { class: 'hint', text: 'Insert variable:' }), chips]);
+  const condChips = el('div', { class: 'chips' },
+    conditionalSnippets().map((v) =>
+      el('span', { class: 'chip cond-chip', title: v.hint || '', text: v.label,
+        onmousedown: (e) => { e.preventDefault(); insertAtCaret(v.snippet); } })));
+
+  const node = el('div', {}, [
+    toolbar, editor, source,
+    el('div', { class: 'hint', text: 'Insert variable:' }), chips,
+    el('div', { class: 'hint', text: 'Insert condition (edit the column id / value):' }), condChips,
+  ]);
   return {
     node,
     getHtml: () => (sourceMode ? source.value.trim() : editor.innerHTML.trim()),
@@ -171,9 +180,25 @@ function availableVariables() {
   return base.concat(cols).concat(subs);
 }
 
+// Block-conditional snippets the template engine understands (renderConditionals).
+// Uses a real column id from the loaded board as an example so it's easy to edit.
+function conditionalSnippets() {
+  const exCol = boardCols()[0]?.id || 'COLUMN_ID';
+  const exSub = subCols()[0]?.id;
+  const out = [
+    { label: 'if/else', snippet: `{{#if column.${exCol}}}has a value{{else}}empty{{/if}}`, hint: 'Show one of two texts based on whether a column has a value' },
+    { label: 'if equals', snippet: `{{#ifEquals column.${exCol} "Done"}}done!{{else}}not yet{{/ifEquals}}`, hint: 'Compare a column value (case-insensitive) and branch' },
+    { label: 'unless (empty)', snippet: `{{#unless column.${exCol}}}still missing{{/unless}}`, hint: 'Show text only when a column is empty' },
+  ];
+  if (exSub) {
+    out.push({ label: 'if subitem', snippet: `{{#ifEquals subitem.column.${exSub} "Done"}}received{{else}}pending{{/ifEquals}}`, hint: 'Branch on the triggering subitem’s column value' });
+  }
+  return out;
+}
+
 // ── state ────────────────────────────────────────────────────────────────────
 const state = { structure: null, boardId: null, ruleset: { rules: [] }, queue: [] };
-const conditionRows = [];
+const conditionGroups = []; // OR-of-ANDs: each group has its own AND'd condition rows
 const actionRows = [];
 let scopeGroupCombo = null;
 
@@ -244,13 +269,18 @@ function subitemNamePicker(initValue) {
   return { node, serialize: () => input.value.trim() };
 }
 
-/** A linked column-combo + label-select; label list follows the chosen column. */
-function columnLabelPair(cols, init) {
+/**
+ * A linked column-combo + label-select; label list follows the chosen column.
+ * `opts.emptyLabel` sets the first option's text — pass '(no value / empty)' for
+ * conditions where selecting it means "the column has no value".
+ */
+function columnLabelPair(cols, init, opts = {}) {
+  const emptyLabel = opts.emptyLabel || '— label —';
   const colSel = combo([{ value: '', label: '— column —' }, ...colOptions(cols)], { placeholder: '— column —', onChange: () => refresh() });
-  const labelSel = select([{ value: '', label: '— label —' }]);
+  const labelSel = select([{ value: '', label: emptyLabel }]);
   const refresh = () => {
     labelSel.innerHTML = '';
-    [{ value: '', label: '— label —' }, ...labelsFor(colSel.value)].forEach((o) =>
+    [{ value: '', label: emptyLabel }, ...labelsFor(colSel.value)].forEach((o) =>
       labelSel.appendChild(el('option', { value: o.value, text: o.label })),
     );
   };
@@ -367,10 +397,10 @@ const CONDITIONS = [
   { value: 'column_empty', label: 'Column is empty' },
   { value: 'in_group', label: 'Item is in group' },
   { value: 'moved_from_group', label: 'Item moved from group' },
-  { value: 'subitem_checked', label: 'Subitem is checked' },
+  { value: 'subitem_checked', label: 'Subitem is' },
 ];
 
-function makeConditionRow(init) {
+function makeConditionRow(init, ownerRows) {
   const typeSel = select(CONDITIONS.map((c) => ({ value: c.value, label: c.label })));
   const params = el('div');
   let serializeParams = () => ({});
@@ -382,7 +412,7 @@ function makeConditionRow(init) {
     const i = pending; pending = null;
     params.innerHTML = '';
     if (t === 'status_is' || t === 'status_is_not') {
-      const pair = columnLabelPair(byType(boardCols(), ['status', 'color']), i);
+      const pair = columnLabelPair(byType(boardCols(), ['status', 'color']), i, { emptyLabel: '(no value / empty)' });
       params.appendChild(pair.node);
       serializeParams = pair.serialize;
     } else if (t === 'column_equals') {
@@ -399,9 +429,9 @@ function makeConditionRow(init) {
       params.appendChild(g.node);
       serializeParams = () => ({ groupId: g.value });
     } else if (t === 'subitem_checked') {
-      const pair = columnLabelPair(byType(subCols(), ['status', 'color']), i);
+      const pair = columnLabelPair(byType(subCols(), ['status', 'color']), i, { emptyLabel: '(no value / empty)' });
       const picker = subitemNamePicker(i?.subitemName);
-      params.append(el('label', { text: 'Subitem' }), picker.node, el('label', { text: 'Status → label' }), pair.node);
+      params.append(el('label', { text: 'Subitem' }), picker.node, el('label', { text: 'Status → label (choose “(no value / empty)” to match an unset subitem)' }), pair.node);
       serializeParams = () => {
         const p = pair.serialize();
         const nm = picker.serialize();
@@ -412,10 +442,45 @@ function makeConditionRow(init) {
   typeSel.addEventListener('change', render);
   render();
 
-  const remove = el('button', { class: 'danger', text: '✕', onclick: () => removeRow(conditionRows, row) });
+  const remove = el('button', { class: 'danger', text: '✕', onclick: () => removeRow(ownerRows, row) });
   const node = el('div', { class: 'subform' }, [el('div', { class: 'row' }, [typeSel, remove]), params]);
   const row = { node, serialize: () => ({ type: typeSel.value, ...serializeParams() }) };
   return row;
+}
+
+// ── condition groups (OR-of-ANDs) ────────────────────────────────────────────
+function makeConditionGroup(initConditions) {
+  const rows = [];
+  const list = el('div', { class: 'cond-list' });
+  const addRow = (init) => {
+    const row = makeConditionRow(init, rows);
+    rows.push(row);
+    list.appendChild(row.node);
+  };
+  const seed = initConditions && initConditions.length ? initConditions : [null];
+  seed.forEach((c) => addRow(c));
+  const addBtn = el('button', { class: 'link', text: '+ AND condition', onclick: (e) => { e.preventDefault(); addRow(); } });
+  const removeBtn = el('button', { class: 'danger', text: '✕ remove group', onclick: (e) => { e.preventDefault(); removeRow(conditionGroups, group); renderConditionGroups(); } });
+  const node = el('div', { class: 'cond-group' }, [
+    el('div', { class: 'row' }, [el('span', { class: 'hint', text: 'Match ALL of:' }), removeBtn]),
+    list, addBtn,
+  ]);
+  const group = { node, rows, serialize: () => ({ conditions: rows.map((r) => r.serialize()) }) };
+  return group;
+}
+
+/** Re-render the condition groups with "OR" separators between them. */
+function renderConditionGroups() {
+  const container = $('conditions');
+  container.innerHTML = '';
+  if (!conditionGroups.length) {
+    container.appendChild(el('div', { class: 'hint', text: 'No conditions — the rule fires whenever the trigger matches. Add an OR group to gate it.' }));
+    return;
+  }
+  conditionGroups.forEach((g, i) => {
+    if (i > 0) container.appendChild(el('div', { class: 'or-sep', text: 'OR' }));
+    container.appendChild(g.node);
+  });
 }
 
 // ── action rows ──────────────────────────────────────────────────────────────
@@ -452,9 +517,11 @@ function setColumnControls(init) {
       valWrap.appendChild(sel);
       getValue = () => sel.value;
     } else {
-      const inp = el('input', { placeholder: 'value (supports {{variables}}, e.g. text/number/YYYY-MM-DD)', value: initValue || '' });
-      valWrap.appendChild(inp);
-      getValue = () => inp.value;
+      // Rich editor: lets you compose a message (with variables + if/else) to
+      // stash in a column for manual reuse. HTML is flattened to plain text on write.
+      const editor = richEditor(initValue, 'Value — plain text, {{variables}}, dates (YYYY-MM-DD), or a generated message to stash');
+      valWrap.appendChild(editor.node);
+      getValue = () => editor.getHtml();
     }
     initValue = '';
   };
@@ -491,6 +558,7 @@ function whenControl(init) {
   const mode = select([
     { value: 'immediate', label: 'immediately' },
     { value: 'relative', label: 'after a delay' },
+    { value: 'relative_from_column', label: 'after a delay from a column value' },
     { value: 'absolute', label: 'at a specific time' },
   ]);
   const relDays = el('input', { type: 'number', min: '0', value: '0' });
@@ -499,9 +567,44 @@ function whenControl(init) {
   const field = (label, input) => el('div', {}, [el('label', { text: label }), input]);
   const rel = el('div', { class: 'row hidden' }, [field('Days', relDays), field('Hours', relHours), field('Minutes', relMins)]);
   const abs = el('input', { type: 'datetime-local', class: 'hidden' });
+
+  // ── delay-from-column (reads a number from an item/subitem column at event time) ──
+  const colTarget = select([{ value: 'item', label: 'Item' }, { value: 'subitem', label: 'Subitem' }]);
+  const colSubWrap = el('div');
+  let colSubPicker = null;
+  const colColWrap = el('div');
+  let colCombo = null;
+  const colUnit = select([{ value: 'days', label: 'Days' }, { value: 'hours', label: 'Hours' }, { value: 'minutes', label: 'Minutes' }]);
+  let initColId = init?.mode === 'relative_from_column' ? init.columnId : '';
+  let initColSub = init?.mode === 'relative_from_column' ? init.subitemName : '';
+  const colColsFor = () => (colTarget.value === 'subitem' ? subCols() : boardCols());
+  const renderColCombo = () => {
+    colColWrap.innerHTML = '';
+    colCombo = combo([{ value: '', label: '— column (holds a number) —' }, ...colOptions(colColsFor())], { placeholder: '— column —', value: initColId || '' });
+    colColWrap.appendChild(colCombo.node);
+    initColId = '';
+  };
+  const renderColSub = () => {
+    colSubWrap.innerHTML = '';
+    colSubPicker = null;
+    if (colTarget.value === 'subitem') {
+      colSubPicker = subitemNamePicker(initColSub);
+      colSubWrap.append(el('label', { text: 'Subitem (by name)' }), colSubPicker.node);
+      initColSub = '';
+    }
+  };
+  colTarget.addEventListener('change', () => { renderColSub(); renderColCombo(); });
+  const fromCol = el('div', { class: 'subform hidden' }, [
+    el('span', { class: 'hint', text: 'Delay = (the column’s number) × the unit below' }),
+    el('label', { text: 'Read from' }), colTarget, colSubWrap,
+    el('label', { text: 'Column' }), colColWrap,
+    el('label', { text: 'Unit' }), colUnit,
+  ]);
+
   const sync = () => {
     rel.classList.toggle('hidden', mode.value !== 'relative');
     abs.classList.toggle('hidden', mode.value !== 'absolute');
+    fromCol.classList.toggle('hidden', mode.value !== 'relative_from_column');
   };
   mode.addEventListener('change', sync);
   if (init && init.mode) {
@@ -511,12 +614,21 @@ function whenControl(init) {
       const d = new Date(init.at);
       if (!isNaN(d)) abs.value = new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
     }
-    sync();
+    if (init.mode === 'relative_from_column') { colTarget.value = init.target || 'item'; colUnit.value = init.unit || 'days'; }
   }
-  const node = el('div', {}, [el('span', { class: 'hint', text: 'When' }), mode, rel, abs]);
+  renderColSub();
+  renderColCombo();
+  if (init?.mode) sync();
+
+  const node = el('div', {}, [el('span', { class: 'hint', text: 'When' }), mode, rel, abs, fromCol]);
   const serialize = () => {
     if (mode.value === 'relative') return { mode: 'relative', days: Number(relDays.value) || 0, hours: Number(relHours.value) || 0, minutes: Number(relMins.value) || 0 };
     if (mode.value === 'absolute') return { mode: 'absolute', at: abs.value ? new Date(abs.value).toISOString() : '' };
+    if (mode.value === 'relative_from_column') {
+      const w = { mode: 'relative_from_column', columnId: colCombo ? colCombo.value : '', unit: colUnit.value };
+      if (colTarget.value === 'subitem') { w.target = 'subitem'; if (colSubPicker) w.subitemName = colSubPicker.serialize(); }
+      return w;
+    }
     return { mode: 'immediate' };
   };
   return { node, serialize };
@@ -616,8 +728,10 @@ function buildRule() {
     id, enabled: $('ruleEnabled').checked, boardId: Number(state.boardId),
     scope: { groupId }, trigger: triggerSerialize(), actions: actionRows.map((r) => r.serialize()),
   };
-  const conds = conditionRows.map((r) => r.serialize());
-  if (conds.length) rule.conditions = conds;
+  const groups = conditionGroups
+    .map((g) => ({ conditions: g.serialize().conditions }))
+    .filter((g) => g.conditions.length);
+  if (groups.length) rule.conditionGroups = groups;
   if (rule.actions.length === 0) throw new Error('Add at least one action.');
   return rule;
 }
@@ -702,9 +816,14 @@ function loadRuleIntoBuilder(rule) {
   $('triggerType').value = trig.type || TRIGGERS[0].value;
   renderTriggerParams(trig);
 
-  conditionRows.length = 0;
-  $('conditions').innerHTML = '';
-  (rule.conditions || []).forEach((c) => { const row = makeConditionRow(c); conditionRows.push(row); $('conditions').appendChild(row.node); });
+  conditionGroups.length = 0;
+  const groupsInit = rule.conditionGroups?.length
+    ? rule.conditionGroups
+    : rule.conditions?.length
+      ? [{ conditions: rule.conditions }]
+      : [];
+  groupsInit.forEach((g) => conditionGroups.push(makeConditionGroup(g.conditions || [])));
+  renderConditionGroups();
 
   actionRows.length = 0;
   $('actions').innerHTML = '';
@@ -887,11 +1006,12 @@ function init() {
   $('connectBtn').addEventListener('click', connectBoard);
   $('refreshQueue').addEventListener('click', loadQueue);
   $('genRuleId').addEventListener('click', () => { $('ruleId').value = generateRuleId(); });
-  $('addCondition').addEventListener('click', () => { const r = makeConditionRow(); conditionRows.push(r); $('conditions').appendChild(r.node); });
+  $('addGroup').addEventListener('click', () => { conditionGroups.push(makeConditionGroup()); renderConditionGroups(); });
   $('addAction').addEventListener('click', () => { const r = makeActionRow(); actionRows.push(r); $('actions').appendChild(r.node); renumberActions(); });
   $('saveRule').addEventListener('click', saveRule);
   $('applyJson').addEventListener('click', applyAndSaveJson);
 
+  renderConditionGroups();
   loadRules();
   fetch('/api/config').then((r) => r.json()).then((cfg) => {
     if (cfg.defaultBoardId) { $('boardId').value = cfg.defaultBoardId; loadBoard(); }

@@ -85,6 +85,12 @@
       .chips { display: flex; gap: 5px; flex-wrap: wrap; margin-top: 6px; }
       .chip { cursor: pointer; font-size: 12px; background: #eef0f6; border: 1px solid var(--bd); border-radius: 12px; padding: 2px 9px; }
       .chip:hover { background: #e0e5f1; }
+      .cond-chip { background: #fff4e0; border-color: #f0d9a8; }
+      .cond-chip:hover { background: #ffe9c2; }
+
+      /* condition groups (OR-of-ANDs) */
+      .cond-group { border: 1px solid var(--bd); border-radius: 8px; padding: 8px 10px; background: #fafbfd; }
+      .or-sep { text-align: center; font-weight: 700; font-size: 12px; color: var(--muted); margin: 6px 0; letter-spacing: .08em; }
 
       /* queue items */
       .qitem { border: 1px solid var(--bd); border-radius: 8px; padding: 10px 12px; margin-bottom: 8px; }
@@ -157,9 +163,9 @@
             <select id="triggerType"></select>
             <div id="triggerParams" class="subform"></div>
 
-            <label>Conditions <span class="hint">(all must match)</span></label>
+            <label>Conditions <span class="hint">(groups are OR’d; conditions within a group are AND’d)</span></label>
             <div id="conditions"></div>
-            <button class="link" id="addCondition">+ add condition</button>
+            <button class="link" id="addGroup">+ OR group</button>
 
             <label>Actions</label>
             <div id="actions"></div>

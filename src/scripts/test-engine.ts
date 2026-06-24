@@ -4,6 +4,8 @@ import type { ItemContext } from '../monday/hydrate.js';
 import type { EmailMessage, Senders, SlackMessage } from '../senders/index.js';
 import type { NormalizedEvent } from '../events/types.js';
 import type { Rule } from '../rules/types.js';
+import type { EngineStore, QueueEntry } from '../queue/types.js';
+import { renderTemplate } from '../util/template.js';
 
 /**
  * Offline verification of the rules engine using a mock hydrator + capturing
@@ -456,6 +458,111 @@ async function main() {
     check('email text fallback decodes &nbsp;', e.emails[0].body === 'hello  world');
     check('email sends HTML when only entities present', e.emails[0].html === 'hello&nbsp;&nbsp;world');
     check('slack decodes &nbsp;', e.slacks[0].text === 'a b');
+  }
+
+  // 17) OR condition groups: the rule matches when ANY group passes (AND within a group).
+  {
+    const rule: Rule = {
+      id: 'or', enabled: true, boardId: BOARD, scope: { groupId: GROUP },
+      trigger: { type: 'item_entered_group' },
+      conditionGroups: [
+        { conditions: [{ type: 'status_is', columnId: 'status', label: 'Done' }, { type: 'in_group', groupId: 'nope' }] },
+        { conditions: [{ type: 'status_is', columnId: 'status', label: 'Stuck' }] },
+      ],
+      actions: [{ type: 'slack', when: { mode: 'immediate' }, text: 'or hit' }],
+    };
+    // Group 1 fails (not in 'nope'); group 2 passes (status Stuck) → fires.
+    let e = makeEngine([rule], makeItem({ columns: { status: { text: 'Stuck', value: null, type: 'color' } } }));
+    let r = await e.engine.handleEvent(entered(100));
+    check('OR groups: second group passes → fires', r.matched === 1 && e.slacks.length === 1);
+
+    // Neither group passes → no fire.
+    e = makeEngine([rule], makeItem({ columns: { status: { text: 'Working on it', value: null, type: 'color' } } }));
+    r = await e.engine.handleEvent(entered(100));
+    check('OR groups: no group passes → no fire', r.matched === 0 && e.slacks.length === 0);
+
+    // First group fully passes (Done + in NP Consultation) → fires.
+    const rule2: Rule = { ...rule, conditionGroups: [
+      { conditions: [{ type: 'status_is', columnId: 'status', label: 'Done' }, { type: 'in_group', groupId: GROUP }] },
+      { conditions: [{ type: 'status_is', columnId: 'status', label: 'Stuck' }] },
+    ] };
+    e = makeEngine([rule2], makeItem({ columns: { status: { text: 'Done', value: null, type: 'color' } } }));
+    r = await e.engine.handleEvent(entered(100));
+    check('OR groups: first group fully passes → fires', r.matched === 1 && e.slacks.length === 1);
+  }
+
+  // 18) template if/else conditionals (#if / #unless / #ifEquals + nesting).
+  {
+    const ctx = { column: { x: 'Done', y: '' }, subitem: { name: 'X-ray', column: { z: 'Done' } } };
+    check('#if true branch', renderTemplate('{{#if column.x}}has{{else}}none{{/if}}', ctx) === 'has');
+    check('#if false branch (empty value)', renderTemplate('{{#if column.y}}has{{else}}none{{/if}}', ctx) === 'none');
+    check('#unless empty → shows', renderTemplate('{{#unless column.y}}missing{{/unless}}', ctx) === 'missing');
+    check('#ifEquals matches (case-insensitive)', renderTemplate('{{#ifEquals column.x "done"}}yes{{else}}no{{/ifEquals}}', ctx) === 'yes');
+    check('#ifEquals no-match → else', renderTemplate('{{#ifEquals column.x "Stuck"}}yes{{else}}no{{/ifEquals}}', ctx) === 'no');
+    const nested = '{{#if column.x}}A {{#ifEquals subitem.column.z "Done"}}got {{subitem.name}}{{else}}pending{{/ifEquals}}{{/if}}';
+    check('nested conditionals + var expansion', renderTemplate(nested, ctx) === 'A got X-ray');
+  }
+
+  // 19) set_column flattens HTML to plain text; label-index/plain values pass through.
+  {
+    const writes: any[] = [];
+    const mk = (value: string, columnId = 'long_text') =>
+      new RulesEngine({
+        rules: [{ id: 'sc', enabled: true, boardId: BOARD, scope: { groupId: GROUP },
+          trigger: { type: 'item_entered_group' },
+          actions: [{ type: 'set_column', when: { mode: 'immediate' }, columnId, value }] }],
+        senders: { async sendEmail() {}, async sendSlack() {} },
+        columnWriter: async (a) => { writes.push(a); },
+        hydrate: async () => makeItem(),
+      });
+
+    writes.length = 0;
+    await mk('<p>Hi <strong>{{item.name}}</strong></p>').handleEvent(entered(100));
+    check('set_column flattens HTML value to plain text', writes[0].value === 'Hi NP Patient');
+
+    writes.length = 0;
+    await mk('1', 'status').handleEvent(entered(100));
+    check('set_column leaves a label-index value unchanged', writes[0].value === '1');
+  }
+
+  // 20) relative_from_column: dueAt = now + (column number × unit); NaN → immediate.
+  {
+    const SUBITEM_BOARD = 18403436575;
+    const enq: QueueEntry[] = [];
+    const store: EngineStore = {
+      enqueue: (e) => enq.push(e),
+      cancelPendingForItem: () => 0,
+      getItemEntry: () => null,
+      recordItemEntry: () => {},
+      clearItemEntry: () => {},
+    };
+    const mk = (when: any, item: ItemContext) =>
+      new RulesEngine({
+        rules: [{ id: 'rfc', enabled: true, boardId: BOARD, scope: { groupId: GROUP },
+          trigger: { type: 'item_entered_group' },
+          actions: [{ type: 'slack', when, text: 'later' }] }],
+        senders: { async sendEmail() {}, async sendSlack() {} },
+        store,
+        hydrate: async () => item,
+      });
+
+    enq.length = 0;
+    const itemNum = makeItem({ columns: { status: { text: 'x', value: null, type: 'color' }, num: { text: '3', value: null, type: 'numbers' } } });
+    const before = Date.now();
+    await mk({ mode: 'relative_from_column', columnId: 'num', unit: 'days' }, itemNum).handleEvent(entered(100));
+    const expected = before + 3 * 86_400_000;
+    check('relative_from_column: 3 (days) → ~now+3d', enq.length === 1 && Math.abs(enq[0].dueAt - expected) < 5_000);
+
+    enq.length = 0;
+    const itemSub = makeItem({ subitems: [{ id: 7, boardId: SUBITEM_BOARD, name: 'X-ray', columns: { wait: { text: '2', value: null, type: 'numbers' } } }] });
+    const before2 = Date.now();
+    await mk({ mode: 'relative_from_column', target: 'subitem', subitemName: 'X-ray', columnId: 'wait', unit: 'hours' }, itemSub).handleEvent(entered(100));
+    check('relative_from_column: subitem 2 (hours) → ~now+2h', enq.length === 1 && Math.abs(enq[0].dueAt - (before2 + 2 * 3_600_000)) < 5_000);
+
+    enq.length = 0;
+    const before3 = Date.now();
+    await mk({ mode: 'relative_from_column', columnId: 'status', unit: 'days' }, itemNum).handleEvent(entered(100));
+    check('relative_from_column: non-numeric value → immediate', enq.length === 1 && Math.abs(enq[0].dueAt - before3) < 5_000);
   }
 
   console.log(`\n${passed} checks passed.`);

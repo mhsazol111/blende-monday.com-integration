@@ -225,7 +225,36 @@ content type, non-2xx → throw, token caching).
 > `'rule configurator'`, stale since the 2026-06-17 UI redesign retitled it
 > `Blende — automation configurator`; updated to match (`'automation configurator'`).
 
-**All offline suites pass: `npm test` → 106 checks (ingress 10, engine 38, queue 24, polish 6,
+**OR condition groups + template if/else + rich set_column + delay-from-column (2026-06-24):** five
+configurator/engine features.
+  - **OR conditions (OR-of-ANDs):** `Rule.conditionGroups?: ConditionGroup[]` added alongside legacy
+    flat `conditions` (`src/rules/types.ts`). Engine `conditionsPass(rule, …)` passes when ANY group
+    passes (AND within a group); legacy flat `conditions` = one AND group → fully backward compatible
+    (`src/rules/engine.ts`). UI: `makeConditionGroup()` + `renderConditionGroups()` render groups
+    joined by "OR" with a "+ OR group" button; `buildRule` emits `conditionGroups`, edit-prefill reads
+    groups (or wraps legacy `conditions`).
+  - **"Subitem is" + empty value:** the `subitem_checked` condition is relabelled "Subitem is" and the
+    status-label dropdown's first option is now an explicit "(no value / empty)" (serializes `label:
+    ''`). Engine already matched `''` as empty — no engine change; loader allows empty label. Same
+    empty option added to `status_is`/`status_is_not` conditions.
+  - **If/else in messages:** `src/util/template.ts` gained `renderConditionals` (runs before `{{var}}`
+    substitution) supporting `{{#if path}}…{{else}}…{{/if}}`, `{{#unless}}`, and `{{#ifEquals path
+    "value"}}…{{/ifEquals}}` (case-insensitive value check), nestable. Works in email/Slack/set_column
+    automatically (all flow through `renderTemplate`). UI: "Insert condition" snippet chips in
+    `richEditor` (`conditionalSnippets()`), seeded with a real board column id.
+  - **Rich-text "Set a monday value":** the set_column free-text value (non-status columns) now uses
+    the `richEditor`; the engine flattens HTML → plain text on write (`looksLikeHtml ? htmlToText`),
+    so a generated message can be stashed in a column for manual reuse. Status/color columns keep the
+    label-index `<select>`. No schema change.
+  - **Delay from a column:** new `ActionWhen` mode `relative_from_column` (`target`/`subitemName`/
+    `columnId`/`unit`). `dueAtFor(when, item)` reads the hydrated item/subitem column number ×
+    unit (days/hours/minutes) at event time; NaN/missing → immediate (warn). UI: 4th "after a delay
+    from a column value" mode in `whenControl`. Loader validates the new mode.
+  - Verified: `npm run test:engine` extended (+14 → 52 checks: OR groups, template if/else+nesting,
+    set_column plain-text, relative_from_column timing); live PUT/GET round-trip of a rule using all
+    new shapes succeeds.
+
+**All offline suites pass: `npm test` → 120 checks (ingress 10, engine 52, queue 24, polish 6,
 cutover 9, admin 7, exchange 12).** The legacy PHP plugin is still untouched and live.
 
 **Configurator:** run `npm run dev` (or `npm start`) and open `http://localhost:<PORT>/`. If
@@ -286,10 +315,15 @@ A rule = one **trigger** + zero-or-more AND **conditions** + one-or-more **actio
 > webhook in `WebhookEventType`, so it could never fire. Dropped from the engine, types,
 > normalizer, and UI to keep the surface minimal.
 
-### Conditions (AND-combined)
-`subitem_checked` (other named subitems also checked) · `status_is` / `status_is_not` ·
-`column_equals` / `column_empty` / `column_not_empty` · `in_group` · `moved_from_group` (true when
-the move's `sourceGroupId` matches — pairs with `item_entered_group` to catch a specific transition).
+### Conditions (OR of AND groups)
+`subitem_checked` ("Subitem is" — a named subitem's status equals a label, incl. `''` = empty) ·
+`status_is` / `status_is_not` · `column_equals` / `column_empty` / `column_not_empty` · `in_group` ·
+`moved_from_group` (true when the move's `sourceGroupId` matches — pairs with `item_entered_group` to
+catch a specific transition).
+
+Conditions live in **groups**: the rule matches when ANY `conditionGroups[]` group passes (OR), and
+within a group ALL conditions must pass (AND). Legacy flat `conditions[]` is honored as a single AND
+group.
 
 ### Actions
 - `email` — `to` (literal list) and/or `to_from_column` (people/email column), `subject`, `body` (rich HTML), `when`.
@@ -298,10 +332,17 @@ the move's `sourceGroupId` matches — pairs with `item_entered_group` to catch 
 - `clone_template_subitems` — clone subitems from the matching Templates item (ported PHP cloner).
 - `set_column` — write a value back to monday (`change_simple_column_value`): item or a named
   subitem; status uses the label **index**, other columns take text/number/date; supports `when`
-  (so a delayed Slack + a status flip can fire together) and `{{templating}}` on the value.
+  (so a delayed Slack + a status flip can fire together) and `{{templating}}` on the value. The
+  free-text value is authored in the rich editor (supports `{{vars}}` + if/else) and HTML is
+  flattened to **plain text** on write — used to stash a generated message in a column for manual reuse.
 - _Reserved for later:_ `post_update`, `create_subitems`.
 
-`when`: `immediate` | `relative` (`+N days/hours/minutes`) | `absolute` (ISO timestamp).
+`when`: `immediate` | `relative` (`+N days/hours/minutes`) | `relative_from_column` (delay = an
+item/subitem column's number × a chosen unit, read at event time) | `absolute` (ISO timestamp).
+
+**Message templating** (email body/subject, Slack text, set_column value) supports `{{dotted.paths}}`
+plus block conditionals: `{{#if path}}…{{else}}…{{/if}}`, `{{#unless path}}…{{/unless}}`,
+`{{#ifEquals path "value"}}…{{/ifEquals}}` (case-insensitive), nestable — see `src/util/template.ts`.
 
 ### Behavioral defaults (decided)
 1. **N-days** = calendar days, counted from when the item **entered the group** (not creation).

@@ -7,7 +7,16 @@
 export type ActionWhen =
   | { mode: 'immediate' }
   | { mode: 'relative'; days?: number; hours?: number; minutes?: number }
-  | { mode: 'absolute'; at: string }; // ISO-8601
+  | { mode: 'absolute'; at: string } // ISO-8601
+  // Delay read from a monday column (or named subitem column) at event time: the
+  // column's value is parsed as a number and multiplied by `unit`.
+  | {
+      mode: 'relative_from_column';
+      target?: 'item' | 'subitem'; // default 'item'
+      subitemName?: string; // required when target='subitem'
+      columnId: string;
+      unit: 'days' | 'hours' | 'minutes';
+    };
 
 // ── Triggers ─────────────────────────────────────────────────────────────
 export type Trigger =
@@ -25,7 +34,14 @@ export type Trigger =
   // Timed — scheduled at group entry; dispatched by the worker (Phase 4).
   | { type: 'item_in_group_for_days'; days: number; repeatEveryDays?: number };
 
-// ── Conditions (AND-combined) ───────────────────────────────────────────────
+// ── Conditions ──────────────────────────────────────────────────────────────
+// A rule matches when ANY condition group passes (OR); within a group, ALL of
+// its conditions must pass (AND). The legacy flat `Rule.conditions` is treated
+// as a single AND group.
+export interface ConditionGroup {
+  conditions: Condition[];
+}
+
 export type Condition =
   | { type: 'status_is'; columnId: string; label: string }
   | { type: 'status_is_not'; columnId: string; label: string }
@@ -106,6 +122,9 @@ export interface Rule {
   boardId: number;
   scope: RuleScope;
   trigger: Trigger;
+  /** Legacy flat AND list (still honored). Prefer `conditionGroups`. */
   conditions?: Condition[];
+  /** OR-of-ANDs: the rule matches if ANY group's conditions all pass. */
+  conditionGroups?: ConditionGroup[];
   actions: Action[];
 }
