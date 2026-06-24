@@ -444,6 +444,33 @@ async function main() {
     check('subitem variables resolve in templates', e.slacks[0]?.text === 'X-ray note=urgent');
   }
 
+  // 15b) a named subitem on a message action exposes {{subitem.*}} on a
+  // NON-subitem trigger (item_entered_group), resolved from the hydrated item.
+  {
+    const SUBITEM_BOARD = 18403436575;
+    const rule: Rule = {
+      id: 'subname', enabled: true, boardId: BOARD, scope: { groupId: GROUP },
+      trigger: { type: 'item_entered_group' },
+      actions: [{ type: 'slack', when: { mode: 'immediate' }, subitemName: 'Welcome Letter', text: '{{subitem.name}} note={{subitem.column.text_n}}' }],
+    };
+    const item = makeItem({ subitems: [{ id: 12, boardId: SUBITEM_BOARD, name: 'Welcome Letter', columns: { text_n: { text: 'sent', value: null, type: 'text' } } }] });
+    const e = makeEngine([rule], item);
+    await e.engine.handleEvent(entered(100));
+    check('named subitem resolves {{subitem.*}} on non-subitem trigger', e.slacks[0]?.text === 'Welcome Letter note=sent');
+  }
+
+  // 15c) a named subitem that doesn't exist → {{subitem.*}} renders blank (no throw).
+  {
+    const rule: Rule = {
+      id: 'submiss', enabled: true, boardId: BOARD, scope: { groupId: GROUP },
+      trigger: { type: 'item_entered_group' },
+      actions: [{ type: 'slack', when: { mode: 'immediate' }, subitemName: 'Nope', text: 'name=[{{subitem.column.text_n}}]' }],
+    };
+    const e = makeEngine([rule], makeItem({ subitems: [] }));
+    await e.engine.handleEvent(entered(100));
+    check('missing named subitem → blank, no throw', e.slacks[0]?.text === 'name=[]');
+  }
+
   // 16) HTML entities decode even without tags (the "&nbsp; shows literally" fix).
   {
     const rule: Rule = {

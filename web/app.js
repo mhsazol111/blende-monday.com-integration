@@ -656,10 +656,14 @@ function makeActionRow(init) {
       const when = whenControl(i?.when);
       const url = el('input', { placeholder: 'webhook URL (optional — uses default)', value: i?.webhookUrl || '' });
       const editor = richEditor(i?.text, 'Slack message — {{item.name}} entered {{group.title}}');
+      const subPicker = state.structure?.subitemBoard ? subitemNamePicker(i?.subitemName) : null;
       params.append(when.node, el('label', { text: 'Webhook URL' }), url, el('label', { text: 'Message (HTML → Slack mrkdwn)' }), editor.node);
+      if (subPicker) params.append(el('label', { text: 'Subitem for {{subitem.*}} (optional)' }), subPicker.node);
       serializeParams = () => {
         const a = { when: when.serialize(), text: editor.getHtml() };
         if (url.value.trim()) a.webhookUrl = url.value.trim();
+        const nm = subPicker ? subPicker.serialize() : '';
+        if (nm) a.subitemName = nm;
         return a;
       };
     } else if (t === 'email') {
@@ -668,6 +672,7 @@ function makeActionRow(init) {
       const toCol = combo([{ value: '', label: '— none —' }, ...colOptions(byType(boardCols(), ['people']))], { placeholder: '— none —', value: i?.toFromColumn || '' });
       const subject = el('input', { placeholder: 'subject, e.g. {{item.name}} is Done', value: i?.subject || '' });
       const editor = richEditor(i?.body, 'Email body — rich text supported');
+      const subPicker = state.structure?.subitemBoard ? subitemNamePicker(i?.subitemName) : null;
       params.append(
         when.node,
         el('label', { text: 'To (literal addresses)' }), to,
@@ -675,11 +680,14 @@ function makeActionRow(init) {
         el('label', { text: 'Subject' }), subject,
         el('label', { text: 'Body (rich HTML)' }), editor.node,
       );
+      if (subPicker) params.append(el('label', { text: 'Subitem for {{subitem.*}} (optional)' }), subPicker.node);
       serializeParams = () => {
         const a = { when: when.serialize(), subject: subject.value, body: editor.getHtml() };
         const list = to.value.split(',').map((s) => s.trim()).filter(Boolean);
         if (list.length) a.to = list;
         if (toCol.value) a.toFromColumn = toCol.value;
+        const nm = subPicker ? subPicker.serialize() : '';
+        if (nm) a.subitemName = nm;
         return a;
       };
     } else if (t === 'set_column') {

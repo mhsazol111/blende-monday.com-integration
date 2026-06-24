@@ -259,7 +259,25 @@ configurator/engine features.
     set_column plain-text, relative_from_column timing); live PUT/GET round-trip of a rule using all
     new shapes succeeds.
 
-**All offline suites pass: `npm test` → 122 checks (ingress 10, engine 54, queue 24, polish 6,
+**Named-subitem template var on any trigger (2026-06-24):** `{{subitem.name}}` / `{{subitem.column.<id>}}`
+previously only resolved on subitem-triggered rules (from the changed subitem's `pulseName`), so a
+message on an `item_entered_group` (or any non-subitem) trigger rendered them blank. `EmailAction`
+and `SlackAction` gained an optional `subitemName` (`src/rules/types.ts`); when set, `renderAction`
+overrides `{{subitem.*}}` with that named subitem from the hydrated item via a new `withNamedSubitem`
+helper + a shared `subitemCtx` (extracted from `buildContext`) — so subject/body/text can reference a
+specific subitem regardless of trigger. Missing subitem → blank + warn (no throw). Works for
+immediate and scheduled sends (renderAction is shared). For a clone→message rule, place the message
+**after** `clone_template_subitems` (engine re-hydrates post-clone). UI (`web/app.js`): the email/slack
+action editors show a "Subitem for {{subitem.*}} (optional)" picker (reusing `subitemNamePicker`) when
+the board has a subitem board. Loader needs no change (extra fields are permitted). Verified:
+`test:engine` +2 (15b named subitem on non-subitem trigger, 15c missing → blank).
+
+**Generated Rule IDs include the group (2026-06-24):** the configurator's "Generate" button now
+produces `{group-slug}-{trigger}-{random}` (was `{trigger}-{random}`) so the rule list shows which
+group a rule targets. `generateRuleId()` slugifies the selected group's title (`web/app.js`); falls
+back to `{trigger}-{random}` when no group is picked. UI-only; server treats IDs as opaque.
+
+**All offline suites pass: `npm test` → 124 checks (ingress 10, engine 56, queue 24, polish 6,
 cutover 9, admin 7, exchange 12).** The legacy PHP plugin is still untouched and live.
 
 **Configurator:** run `npm run dev` (or `npm start`) and open `http://localhost:<PORT>/`. If
@@ -331,8 +349,8 @@ within a group ALL conditions must pass (AND). Legacy flat `conditions[]` is hon
 group.
 
 ### Actions
-- `email` — `to` (literal list) and/or `to_from_column` (people/email column), `subject`, `body` (rich HTML), `when`.
-- `slack` — `text` (rich HTML → mrkdwn), channel/webhook, `when`.
+- `email` — `to` (literal list) and/or `to_from_column` (people/email column), `subject`, `body` (rich HTML), `when`. Optional `subitemName` binds `{{subitem.*}}` to a named subitem (any trigger).
+- `slack` — `text` (rich HTML → mrkdwn), channel/webhook, `when`. Optional `subitemName` (same as email).
 - `clear_pending` — cancel all pending scheduled actions for the item.
 - `clone_template_subitems` — clone subitems from the matching Templates item (ported PHP cloner).
 - `set_column` — write a value back to monday (`change_simple_column_value`): item or a named

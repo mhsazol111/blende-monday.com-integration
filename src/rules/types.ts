@@ -62,6 +62,12 @@ export interface EmailAction {
   toFromColumn?: string;
   subject: string;
   body: string;
+  /**
+   * Named subitem to expose as `{{subitem.*}}` in subject/body, matched by name
+   * on the hydrated item. Lets non-subitem triggers reference a subitem. When
+   * unset, `{{subitem.*}}` falls back to the triggering subitem (subitem rules).
+   */
+  subitemName?: string;
 }
 
 export interface SlackAction {
@@ -70,6 +76,8 @@ export interface SlackAction {
   /** Overrides the default SLACK_WEBHOOK_URL when set. */
   webhookUrl?: string;
   text: string;
+  /** Named subitem exposed as `{{subitem.*}}` in `text` — see EmailAction.subitemName. */
+  subitemName?: string;
 }
 
 export interface ClearPendingAction {

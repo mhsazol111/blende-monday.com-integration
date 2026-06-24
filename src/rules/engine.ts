@@ -2,7 +2,7 @@ import { log } from '../util/logger.js';
 import { renderTemplate } from '../util/template.js';
 import { htmlToText, htmlToSlack, looksLikeHtml } from '../util/html.js';
 import type { NormalizedEvent } from '../events/types.js';
-import { hydrateItem, type Hydrator, type ItemContext } from '../monday/hydrate.js';
+import { hydrateItem, type Hydrator, type ItemContext, type SubitemSnapshot } from '../monday/hydrate.js';
 import { defaultSenders, type Senders } from '../senders/index.js';
 import { cloneTemplateSubitems, type Cloner } from '../monday/clone.js';
 import { setColumnValue, type ColumnWriter } from '../monday/write.js';
@@ -311,12 +311,13 @@ function renderAction(
   if (action.type === 'email') {
     // Body may be rich HTML (configurator) or plain text (older rules). Send HTML
     // when present and always include a plain-text fallback.
-    const rendered = renderTemplate(action.body, ctx);
+    const actx = withNamedSubitem(ctx, item, action.subitemName, action.type);
+    const rendered = renderTemplate(action.body, actx);
     return {
       actionType: 'email',
       payload: {
         to: mergeRecipients(action.to, action.toFromColumn, item),
-        subject: renderTemplate(action.subject, ctx),
+        subject: renderTemplate(action.subject, actx),
         body: htmlToText(rendered),
         ...(looksLikeHtml(rendered) ? { html: rendered } : {}),
       },
@@ -324,11 +325,12 @@ function renderAction(
   }
   if (action.type === 'slack') {
     // Slack can't render HTML — convert rich text to Slack mrkdwn.
+    const actx = withNamedSubitem(ctx, item, action.subitemName, action.type);
     return {
       actionType: 'slack',
       payload: {
         webhookUrl: action.webhookUrl ?? '',
-        text: htmlToSlack(renderTemplate(action.text, ctx)),
+        text: htmlToSlack(renderTemplate(action.text, actx)),
       },
     };
   }
@@ -345,6 +347,25 @@ function renderAction(
     return { actionType: 'set_column', payload: { boardId: item.boardId, itemId: item.id, columnId: action.columnId, value } };
   }
   throw new Error(`renderAction called with non-sendable action: ${(action as Action).type}`);
+}
+
+/**
+ * When a message action names a subitem, override `{{subitem.*}}` with that
+ * subitem's data so non-subitem triggers can still reference it. Returns `ctx`
+ * unchanged when no name is given.
+ */
+function withNamedSubitem(
+  ctx: Record<string, unknown>,
+  item: ItemContext,
+  subitemName: string | undefined,
+  actionType: string,
+): Record<string, unknown> {
+  if (!subitemName) return ctx;
+  const sub = findSubitemByName(item, subitemName);
+  if (!sub) {
+    log.warn(`${actionType}: subitem "${subitemName}" not found on item ${item.id}; {{subitem.*}} will be blank.`);
+  }
+  return { ...ctx, subitem: subitemCtx(sub, subitemName) };
 }
 
 /** Find a subitem by (case-insensitive) name on the hydrated item. */
@@ -540,14 +561,20 @@ function buildContext(item: ItemContext, event: NormalizedEvent): Record<string,
   };
 
   // For subitem-triggered rules, expose the TRIGGERING subitem so templates can
-  // use {{subitem.name}} and {{subitem.column.<id>}}.
+  // use {{subitem.name}} and {{subitem.column.<id>}}. (A per-action subitemName
+  // can override this in renderAction, so even non-subitem triggers can target one.)
   if (event.kind === 'subitem_changed') {
     const name = String((event.raw as any).pulseName ?? '');
     const sub = item.subitems.find((s) => s.name.toLowerCase() === name.toLowerCase());
-    const subColumn: Record<string, string> = {};
-    if (sub) for (const [id, snap] of Object.entries(sub.columns)) subColumn[id] = snap.text;
-    ctx.subitem = { name: sub?.name ?? name, column: subColumn };
+    ctx.subitem = subitemCtx(sub, name);
   }
 
   return ctx;
+}
+
+/** Shape the `{{subitem.*}}` template context for one subitem (name + columns). */
+function subitemCtx(sub: SubitemSnapshot | undefined, fallbackName: string) {
+  const column: Record<string, string> = {};
+  if (sub) for (const [id, snap] of Object.entries(sub.columns)) column[id] = snap.text;
+  return { name: sub?.name ?? fallbackName, column };
 }
