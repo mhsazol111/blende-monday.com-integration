@@ -206,8 +206,27 @@ A→B move now clears A's pending but keeps B's freshly-scheduled action. Regres
 `test:queue` case I (immediate actions on a create-in-place rule were never affected — that path has
 no prior group entry, which is why a create-in-group rule worked but a move-into-group rule didn't).
 
-**All offline suites pass: `npm test` → 94 checks (ingress 10, engine 38, queue 24, polish 6,
-cutover 9, admin 7).** The legacy PHP plugin is still untouched and live.
+**Microsoft Exchange (Graph) email provider added (2026-06-23):** email now has **two** transports,
+selected by `EMAIL_PROVIDER` (`graph` | `smtp` | `auto`, default `auto`). `auto` → Graph if its
+creds are set, else SMTP if `SMTP_HOST` set, else dry-run. The Graph transport
+(`src/senders/graph.ts`, `sendViaGraph`) uses **OAuth2 client-credentials** (app-only) against an
+Azure app registration with the `Mail.Send` **application** permission — no mailbox password — via
+`POST /users/{sender}/sendMail` on Graph v1.0, with a module-level token cache (refreshed ~60s
+before expiry). Built on the global `fetch` (no new npm dependency). Wired into
+`defaultSenders.sendEmail` (`src/senders/index.ts`) via `resolveEmailProvider()`; the SMTP/nodemailer
+path is unchanged. New env vars: `EMAIL_PROVIDER`, `MS_GRAPH_TENANT_ID`, `MS_GRAPH_CLIENT_ID`,
+`MS_GRAPH_CLIENT_SECRET`, `MS_GRAPH_SENDER` (see `.env.example`). The `EmailMessage`/`Senders`
+interface, engine `dispatch`, worker, and queue are untouched. **Client setup instructions** (what
+the M365 admin must create + the 5 values to hand over) are in **`docs/EXCHANGE-SETUP.md`**. Verified
+offline via `npm run test:exchange` (12 checks: token shape, sendMail URL/Bearer/body, HTML-vs-Text
+content type, non-2xx → throw, token caching).
+
+> **Fixed (2026-06-23):** `test:admin`'s first check asserted the served HTML contained
+> `'rule configurator'`, stale since the 2026-06-17 UI redesign retitled it
+> `Blende — automation configurator`; updated to match (`'automation configurator'`).
+
+**All offline suites pass: `npm test` → 106 checks (ingress 10, engine 38, queue 24, polish 6,
+cutover 9, admin 7, exchange 12).** The legacy PHP plugin is still untouched and live.
 
 **Configurator:** run `npm run dev` (or `npm start`) and open `http://localhost:<PORT>/`. If
 `WEBHOOK_SHARED_SECRET` is set, saving requires `?secret=<value>` on the URL.

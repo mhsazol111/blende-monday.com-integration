@@ -53,13 +53,23 @@ export const env = {
   // slack
   slackWebhookUrl: optional('SLACK_WEBHOOK_URL'),
 
-  // email
+  // email — transport selection (graph | smtp | auto). `auto` resolves at send
+  // time: Graph if its creds are present, else SMTP if SMTP_HOST is set, else dry-run.
+  emailProvider: optional('EMAIL_PROVIDER', 'auto'),
+
+  // email — SMTP transport
   smtpHost: optional('SMTP_HOST'),
   smtpPort: Number(optional('SMTP_PORT', '587')),
   smtpUser: optional('SMTP_USER'),
   smtpPass: optional('SMTP_PASS'),
   smtpFromName: optional('SMTP_FROM_NAME', 'Monday Automation'),
   smtpFromEmail: optional('SMTP_FROM_EMAIL', 'no-reply@example.com'),
+
+  // email — Microsoft Graph (Exchange Online) transport, OAuth2 client-credentials
+  msGraphTenantId: optional('MS_GRAPH_TENANT_ID'),
+  msGraphClientId: optional('MS_GRAPH_CLIENT_ID'),
+  msGraphClientSecret: optional('MS_GRAPH_CLIENT_SECRET'),
+  msGraphSender: optional('MS_GRAPH_SENDER'),
 
   // logging
   logLevel: optional('LOG_LEVEL', 'info'),

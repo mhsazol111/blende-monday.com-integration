@@ -34,7 +34,7 @@ async function main() {
   const app = buildServer(); // no engine — admin routes still work
   try {
     let res = await app.inject({ method: 'GET', url: '/' });
-    check('GET / serves the configurator HTML', res.statusCode === 200 && res.body.includes('rule configurator'));
+    check('GET / serves the configurator HTML', res.statusCode === 200 && res.body.includes('automation configurator'));
 
     res = await app.inject({ method: 'GET', url: '/app.js' });
     check('GET /app.js serves JS', res.statusCode === 200 && res.body.includes('loadBoard'));

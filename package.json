@@ -20,7 +20,8 @@
     "test:polish": "tsx src/scripts/test-polish.ts",
     "test:cutover": "tsx src/scripts/test-cutover.ts",
     "test:admin": "RULES_PATH=./.test-rules.json tsx src/scripts/test-admin.ts",
-    "test": "npm run test:ingress && npm run test:engine && npm run test:queue && npm run test:polish && npm run test:cutover && npm run test:admin"
+    "test:exchange": "tsx src/scripts/test-exchange.ts",
+    "test": "npm run test:ingress && npm run test:engine && npm run test:queue && npm run test:polish && npm run test:cutover && npm run test:admin && npm run test:exchange"
   },
   "dependencies": {
     "dotenv": "^16.4.5",
