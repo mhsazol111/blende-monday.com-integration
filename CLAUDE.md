@@ -285,12 +285,26 @@ before. UI: a "subitem block" snippet chip (`conditionalSnippets`, gated on a su
 pre-filled with a real subitem name (`subitemNamePicker` caches `state.groupSubitemNames`). Verified:
 `test:engine` +3 (per-name scope, missing → else, nested blocks).
 
+**Rich editor hardened + polished (2026-06-25):** the configurator's `richEditor` (`web/app.js`)
+was a raw `contenteditable`/`execCommand` widget that emitted stray `<div>`s, random `&nbsp;`, and
+Word/Docs paste junk. Hardened (no library — keeps the zero-dep/no-build design + email fidelity):
+`defaultParagraphSeparator='p'` + `styleWithCSS=false` on focus (consistent `<p>`, semantic
+`<b>/<i>`); a **paste sanitizer** (`sanitizeHtml`/`walkClean`, tag+attr whitelist `RICH_ALLOWED`,
+drops `class`/mso/`<o:p>`/comments/script, `<font>`→`<span style=color>`); **output normalization**
+(`normalizeHtml`: nbsp→space, removes empty nodes, collapses/trims `<br>`) applied in `getHtml`/
+source-toggle **only for simple rich text** — full HTML email templates (`hasUnsupportedTags`, e.g.
+tables) round-trip **verbatim**; toolbar buttons now reflect the caret (`queryCommandState`); link
+button adds `https://`. `src/util/html.ts` gained `<s>/<strike>/<del>`→Slack `~text~`. CSS
+(`web/index.html`): taller editor (180px), toolbar merged to the editor, and a restyled
+`.insert-panel` for the variable/condition/subitem chips. Verified in a real browser (Playwright):
+sanitize/normalize/round-trip all correct, no console errors. `test:engine` +1 (`<s>`→`~`).
+
 **Generated Rule IDs include the group (2026-06-24):** the configurator's "Generate" button now
 produces `{group-slug}-{trigger}-{random}` (was `{trigger}-{random}`) so the rule list shows which
 group a rule targets. `generateRuleId()` slugifies the selected group's title (`web/app.js`); falls
 back to `{trigger}-{random}` when no group is picked. UI-only; server treats IDs as opaque.
 
-**All offline suites pass: `npm test` → 127 checks (ingress 10, engine 59, queue 24, polish 6,
+**All offline suites pass: `npm test` → 128 checks (ingress 10, engine 60, queue 24, polish 6,
 cutover 9, admin 7, exchange 12).** The legacy PHP plugin is still untouched and live.
 
 **Configurator:** run `npm run dev` (or `npm start`) and open `http://localhost:<PORT>/`. If

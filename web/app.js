@@ -62,52 +62,184 @@ function combo(options, { value = '', placeholder = '— select —', onChange }
 }
 
 // ── rich text editor (dependency-free, contenteditable → HTML) ─────────────────
+// Tags we keep in WYSIWYG output. Anything else from a paste is unwrapped (text
+// kept). `htmlToText`/`htmlToSlack` (src/util/html.ts) understand this same set.
+const RICH_ALLOWED = new Set(['P', 'BR', 'B', 'STRONG', 'I', 'EM', 'U', 'S', 'STRIKE', 'DEL', 'H1', 'H2', 'H3', 'UL', 'OL', 'LI', 'A', 'SPAN', 'DIV']);
+
+function escapeHtml(s) { return String(s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c])); }
+
+// Keep only whitelisted style properties (e.g. color, text-align) — drops the
+// font-family / mso-* noise that Word and Google Docs paste in.
+function filterStyle(styleText, keep) {
+  const out = [];
+  for (const part of String(styleText || '').split(';')) {
+    const i = part.indexOf(':');
+    if (i < 0) continue;
+    const name = part.slice(0, i).trim().toLowerCase();
+    const val = part.slice(i + 1).trim();
+    if (name && val && keep.includes(name)) out.push(name + ': ' + val);
+  }
+  return out.join('; ');
+}
+
+// Strip attributes/junk from one element (in place), keeping only safe ones.
+function cleanElementAttrs(node) {
+  const tag = node.tagName;
+  let href = '';
+  if (tag === 'A') {
+    href = node.getAttribute('href') || '';
+    if (href && !/^([a-z][a-z0-9+.-]*:|#|\/|mailto:)/i.test(href)) href = 'https://' + href;
+    if (/^\s*javascript:/i.test(href)) href = '';
+  }
+  const style = filterStyle(node.getAttribute('style'), tag === 'SPAN' ? ['color'] : ['text-align', 'color']);
+  for (const a of Array.from(node.attributes)) node.removeAttribute(a.name);
+  if (href) node.setAttribute('href', href);
+  if (style) node.setAttribute('style', style);
+}
+
+// Walk a detached container: drop comments/script/style/Office tags, convert
+// <font> → <span style="color">, unwrap disallowed tags (keep their text), and
+// scrub attributes on the rest.
+function walkClean(container) {
+  for (const child of Array.from(container.childNodes)) {
+    if (child.nodeType === 8) { child.remove(); continue; } // comment
+    if (child.nodeType !== 1) continue; // keep text nodes
+    const tag = child.tagName;
+    if (tag === 'SCRIPT' || tag === 'STYLE' || tag.indexOf(':') >= 0 || /^O:/i.test(tag)) { child.remove(); continue; }
+    if (tag === 'FONT') {
+      const span = document.createElement('span');
+      const c = child.getAttribute('color');
+      let style = filterStyle(child.getAttribute('style'), ['color']);
+      if (c && !/color/i.test(style)) style = 'color: ' + c + (style ? '; ' + style : '');
+      if (style) span.setAttribute('style', style);
+      while (child.firstChild) span.appendChild(child.firstChild);
+      child.parentNode.replaceChild(span, child);
+      walkClean(span);
+      continue;
+    }
+    walkClean(child);
+    if (!RICH_ALLOWED.has(tag)) {
+      while (child.firstChild) child.parentNode.insertBefore(child.firstChild, child);
+      child.parentNode.removeChild(child);
+    } else {
+      cleanElementAttrs(child);
+    }
+  }
+}
+
+/** Clean pasted HTML down to the supported tag set (keeps structure). */
+function sanitizeHtml(html) {
+  const root = document.createElement('div');
+  root.innerHTML = html || '';
+  walkClean(root);
+  return root.innerHTML;
+}
+
+/** Deeper cleanup for save/source view: drop empties & stray &nbsp;, tidy <br>. */
+function normalizeHtml(html) {
+  const root = document.createElement('div');
+  root.innerHTML = html || '';
+  walkClean(root);
+  // Non-breaking spaces → regular spaces (the "&nbsp; everywhere" annoyance).
+  const tw = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const texts = [];
+  while (tw.nextNode()) texts.push(tw.currentNode);
+  for (const t of texts) t.nodeValue = t.nodeValue.replace(/ /g, ' ');
+  // Remove empty elements (no text and no <br>/media), repeatedly for nesting.
+  for (let pass = 0; pass < 20; pass++) {
+    let changed = false;
+    root.querySelectorAll('*').forEach((node) => {
+      if (/^(BR|IMG|HR)$/.test(node.tagName) || node.querySelector('br, img, hr')) return;
+      if (node.textContent.trim() === '' && node.children.length === 0) { node.remove(); changed = true; }
+    });
+    if (!changed) break;
+  }
+  let out = root.innerHTML;
+  out = out.replace(/(?:<br\s*\/?>\s*){3,}/gi, '<br><br>'); // collapse runs of breaks
+  out = out.replace(/(?:\s*<br\s*\/?>)+\s*$/i, '');         // trim trailing breaks
+  return out.trim();
+}
+
+// True when the HTML uses tags outside our set (e.g. a full table-based email
+// template). We then preserve it verbatim instead of normalizing/mangling it.
+function hasUnsupportedTags(html) {
+  return (String(html).match(/<([a-z][a-z0-9]*)\b/gi) || []).some((t) => !RICH_ALLOWED.has(t.replace(/[<]/, '').toUpperCase()));
+}
+
 function richEditor(initialHtml, placeholder) {
   const editor = el('div', { class: 'editor', contenteditable: 'true', 'data-ph': placeholder || 'Write a message — format with the toolbar, insert variables below' });
-  editor.innerHTML = initialHtml || '';
+  editor.innerHTML = initialHtml || ''; // verbatim on load (preserves pasted templates)
   const source = el('textarea', { class: 'editor editor-source hidden', spellcheck: 'false' });
   let sourceMode = false;
+
+  // Normalize simple rich text on the way out, but leave full HTML templates
+  // (tables/inline CSS — `hasUnsupportedTags`) untouched so they round-trip.
+  const cleanForSave = (html) => (hasUnsupportedTags(html) ? html.trim() : normalizeHtml(html));
+
+  // Consistent, convertible markup: <p> paragraphs (not Chrome's <div>) and
+  // tag-based bold/italic (<b>/<i>, not <span style>) for clean html.ts output.
+  const setEditingModes = () => {
+    try { document.execCommand('defaultParagraphSeparator', false, 'p'); } catch (_) {}
+    try { document.execCommand('styleWithCSS', false, false); } catch (_) {}
+  };
+  editor.addEventListener('focus', setEditingModes);
 
   let savedRange = null;
   const saveRange = () => {
     const sel = window.getSelection();
     if (sel && sel.rangeCount && editor.contains(sel.anchorNode)) savedRange = sel.getRangeAt(0).cloneRange();
   };
-  ['keyup', 'mouseup', 'focus'].forEach((ev) => editor.addEventListener(ev, saveRange));
   const restoreRange = () => {
     editor.focus();
     if (savedRange && editor.contains(savedRange.startContainer)) {
       const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(savedRange);
     }
   };
-  const exec = (name, arg) => (e) => { e.preventDefault(); restoreRange(); document.execCommand(name, false, arg); saveRange(); };
-  const tbtn = (label, name, title) => el('button', { text: label, title: title || name, onmousedown: exec(name) });
+  const exec = (name, arg) => (e) => { e.preventDefault(); restoreRange(); document.execCommand(name, false, arg); saveRange(); syncToolbar(); };
+  const fmtBtns = {};
+  const tbtn = (label, name, title) => { const b = el('button', { text: label, title: title || name, onmousedown: exec(name) }); fmtBtns[name] = b; return b; };
 
   const heading = select(
     [{ value: 'P', label: 'Normal' }, { value: 'H1', label: 'Heading 1' }, { value: 'H2', label: 'Heading 2' }, { value: 'H3', label: 'Heading 3' }],
     { title: 'text style' },
   );
   heading.addEventListener('mousedown', saveRange);
-  heading.addEventListener('change', () => { restoreRange(); document.execCommand('formatBlock', false, heading.value); });
+  heading.addEventListener('change', () => { restoreRange(); document.execCommand('formatBlock', false, heading.value); saveRange(); });
 
   const color = el('input', { type: 'color', title: 'text color', value: '#323338' });
-  color.addEventListener('input', () => { restoreRange(); document.execCommand('foreColor', false, color.value); });
+  color.addEventListener('input', () => { restoreRange(); document.execCommand('foreColor', false, color.value); saveRange(); });
 
   const link = el('button', { text: '🔗', title: 'insert link', onmousedown: (e) => {
     e.preventDefault(); restoreRange();
-    const url = prompt('Link URL:'); if (url) document.execCommand('createLink', false, url); saveRange();
+    let url = prompt('Link URL:');
+    if (url) { url = url.trim(); if (!/^([a-z][a-z0-9+.-]*:|#|\/|mailto:)/i.test(url)) url = 'https://' + url; document.execCommand('createLink', false, url); }
+    saveRange();
   } });
 
   const htmlBtn = el('button', { text: '</>', title: 'edit raw HTML', onmousedown: (e) => { e.preventDefault(); toggleSource(); } });
   const toggleSource = () => {
     if (!sourceMode) {
-      source.value = editor.innerHTML;
+      source.value = cleanForSave(editor.innerHTML);
       editor.classList.add('hidden'); source.classList.remove('hidden'); htmlBtn.classList.add('active');
     } else {
-      editor.innerHTML = source.value;
+      editor.innerHTML = source.value; // verbatim back into the editor
       editor.classList.remove('hidden'); source.classList.add('hidden'); htmlBtn.classList.remove('active');
     }
     sourceMode = !sourceMode;
+  };
+
+  // Reflect the caret's formatting on the toolbar (proper-editor feel).
+  const syncToolbar = () => {
+    if (sourceMode) return;
+    const sel = window.getSelection();
+    if (!sel || !sel.rangeCount || !editor.contains(sel.anchorNode)) return;
+    for (const [cmd, btn] of Object.entries(fmtBtns)) {
+      try { btn.classList.toggle('active', document.queryCommandState(cmd)); } catch (_) {}
+    }
+    try {
+      const blk = String(document.queryCommandValue('formatBlock') || '').toUpperCase();
+      heading.value = ['H1', 'H2', 'H3'].includes(blk) ? blk : 'P';
+    } catch (_) {}
   };
 
   const toolbar = el('div', { class: 'toolbar' }, [
@@ -118,6 +250,21 @@ function richEditor(initialHtml, placeholder) {
     link, tbtn('⛓', 'unlink', 'remove link'), color,
     tbtn('⌫', 'removeFormat', 'clear formatting'), htmlBtn,
   ]);
+  ['keyup', 'mouseup', 'focus'].forEach((ev) => editor.addEventListener(ev, () => { saveRange(); syncToolbar(); }));
+  document.addEventListener('selectionchange', syncToolbar);
+
+  // Paste handler: strip Word/Docs/web junk before it enters the document.
+  editor.addEventListener('paste', (e) => {
+    e.preventDefault();
+    const cd = e.clipboardData || window.clipboardData;
+    const html = cd && cd.getData('text/html');
+    const clean = html
+      ? sanitizeHtml(html)
+      : String((cd && cd.getData('text/plain')) || '').split(/\r?\n/).map(escapeHtml).join('<br>');
+    restoreRange();
+    document.execCommand('insertHTML', false, clean);
+    saveRange();
+  });
 
   const insertAtCaret = (text) => {
     if (sourceMode) {
@@ -151,14 +298,16 @@ function richEditor(initialHtml, placeholder) {
       el('span', { class: 'chip cond-chip', title: v.hint || '', text: v.label,
         onmousedown: (e) => { e.preventDefault(); insertAtCaret(v.snippet); } })));
 
-  const node = el('div', {}, [
+  const node = el('div', { class: 'rich' }, [
     toolbar, editor, source,
-    el('div', { class: 'hint', text: 'Insert variable:' }), chips,
-    el('div', { class: 'hint', text: 'Insert condition (edit the column id / value):' }), condChips,
+    el('div', { class: 'insert-panel' }, [
+      el('div', { class: 'insert-title', text: 'Insert variable' }), chips,
+      el('div', { class: 'insert-title', text: 'Insert condition (edit the column id / value)' }), condChips,
+    ]),
   ]);
   return {
     node,
-    getHtml: () => (sourceMode ? source.value.trim() : editor.innerHTML.trim()),
+    getHtml: () => (sourceMode ? source.value.trim() : cleanForSave(editor.innerHTML)),
     setHtml: (h) => { editor.innerHTML = h || ''; if (sourceMode) source.value = h || ''; },
   };
 }

@@ -51,6 +51,7 @@ export function htmlToSlack(input: string): string {
   let s = blockify(input);
   s = s.replace(/<\s*(strong|b)\s*>/gi, '*').replace(/<\s*\/\s*(strong|b)\s*>/gi, '*');
   s = s.replace(/<\s*(em|i)\s*>/gi, '_').replace(/<\s*\/\s*(em|i)\s*>/gi, '_');
+  s = s.replace(/<\s*(s|strike|del)\s*>/gi, '~').replace(/<\s*\/\s*(s|strike|del)\s*>/gi, '~');
   // Slack links use angle brackets, which the tag-strip below would eat — so
   // stash them behind a token sentinel and restore after stripping.
   const links: string[] = [];

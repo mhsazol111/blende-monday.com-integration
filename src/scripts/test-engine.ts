@@ -487,6 +487,17 @@ async function main() {
     check('slack decodes &nbsp;', e.slacks[0].text === 'a b');
   }
 
+  // 16b) strikethrough survives to Slack as ~text~ (the html.ts <s> addition).
+  {
+    const rule: Rule = {
+      id: 'strike', enabled: true, boardId: BOARD, scope: { groupId: GROUP }, trigger: { type: 'item_entered_group' },
+      actions: [{ type: 'slack', when: { mode: 'immediate' }, text: '<p>keep <s>gone</s> done</p>' }],
+    };
+    const e = makeEngine([rule], makeItem());
+    await e.engine.handleEvent(entered(100));
+    check('slack renders <s> as ~strike~', e.slacks[0].text === 'keep ~gone~ done');
+  }
+
   // 17) OR condition groups: the rule matches when ANY group passes (AND within a group).
   {
     const rule: Rule = {
