@@ -530,6 +530,49 @@ async function main() {
     check('nested conditionals + var expansion', renderTemplate(nested, ctx) === 'A got X-ray');
   }
 
+  // 18b) {{#subitem "Name"}} scope blocks: reference several specific subitems
+  // and branch on each one's status in a single message.
+  {
+    const SUBITEM_BOARD = 18403436575;
+    const rule: Rule = {
+      id: 'subblk', enabled: true, boardId: BOARD, scope: { groupId: GROUP },
+      trigger: { type: 'item_entered_group' },
+      actions: [{
+        type: 'slack', when: { mode: 'immediate' },
+        text: 'X:{{#subitem "Request x-rays (if applicable)"}}{{#ifEquals column.status "Done"}}got{{else}}NEED{{/ifEquals}}{{/subitem}} P:{{#subitem "Receive NP paperwork"}}{{column.status}}{{/subitem}}',
+      }],
+    };
+    const item = makeItem({ subitems: [
+      { id: 1, boardId: SUBITEM_BOARD, name: 'Request x-rays (if applicable)', columns: { status: { text: 'Working on it', value: null, type: 'color' } } },
+      { id: 2, boardId: SUBITEM_BOARD, name: 'Receive NP paperwork', columns: { status: { text: 'Done', value: null, type: 'color' } } },
+    ] });
+    const e = makeEngine([rule], item);
+    await e.engine.handleEvent(entered(100));
+    check('subitem blocks scope per named subitem', e.slacks[0]?.text === 'X:NEED P:Done');
+  }
+
+  // 18c) a {{#subitem}} for a name not on the item → empty columns, else branch, no throw.
+  {
+    const rule: Rule = {
+      id: 'subblkmiss', enabled: true, boardId: BOARD, scope: { groupId: GROUP },
+      trigger: { type: 'item_entered_group' },
+      actions: [{ type: 'slack', when: { mode: 'immediate' }, text: '{{#subitem "Nope"}}[{{name}}:{{#ifEquals column.status "Done"}}d{{else}}x{{/ifEquals}}]{{/subitem}}' }],
+    };
+    const e = makeEngine([rule], makeItem({ subitems: [] }));
+    await e.engine.handleEvent(entered(100));
+    check('missing subitem block → name + else branch, no throw', e.slacks[0]?.text === '[Nope:x]');
+  }
+
+  // 18d) nested {{#subitem}} blocks resolve independently (direct renderTemplate).
+  {
+    const ctx = { subitems: [
+      { name: 'A', column: { status: 'Done' } },
+      { name: 'B', column: { status: 'Stuck' } },
+    ] };
+    const tpl = '{{#subitem "A"}}{{name}}={{column.status}} {{#subitem "B"}}{{name}}={{column.status}}{{/subitem}}{{/subitem}}';
+    check('nested subitem blocks scope independently', renderTemplate(tpl, ctx) === 'A=Done B=Stuck');
+  }
+
   // 19) set_column flattens HTML to plain text; label-index/plain values pass through.
   {
     const writes: any[] = [];

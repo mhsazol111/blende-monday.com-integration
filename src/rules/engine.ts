@@ -558,6 +558,9 @@ function buildContext(item: ItemContext, event: NormalizedEvent): Record<string,
     group: { id: item.groupId, title: item.groupTitle },
     status,
     column,
+    // All subitems by name, so templates can scope to a specific one via
+    // {{#subitem "Name"}}…{{/subitem}} regardless of the trigger.
+    subitems: item.subitems.map((s) => subitemCtx(s, s.name)),
   };
 
   // For subitem-triggered rules, expose the TRIGGERING subitem so templates can

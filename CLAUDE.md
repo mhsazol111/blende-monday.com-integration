@@ -272,12 +272,25 @@ action editors show a "Subitem for {{subitem.*}} (optional)" picker (reusing `su
 the board has a subitem board. Loader needs no change (extra fields are permitted). Verified:
 `test:engine` +2 (15b named subitem on non-subitem trigger, 15c missing → blank).
 
+**Named-subitem template blocks (2026-06-25):** a message can now reference **multiple specific
+subitems** and branch on each. New scoping block in `src/util/template.ts`:
+`{{#subitem "Exact Name"}}…{{/subitem}}` — inside it `{{name}}`, `{{column.<id>}}`, `{{subitem.*}}`
+and the existing conditionals resolve against that named subitem (matched case-insensitively against
+`context.subitems`). A `renderSubitemBlocks` pre-pass runs before `renderConditionals` (balanced
+`findSubitemClose` scanner for nesting; recurses via `renderTemplate` with a `scopeForSubitem` child
+context). Missing subitem → its name + empty columns (conditionals fall to `{{else}}`); unbalanced
+tags emit literally. `buildContext` (`src/rules/engine.ts`) now exposes `ctx.subitems` (all subitems
+as `{name, column}` via the shared `subitemCtx`). Templates without the block are byte-identical to
+before. UI: a "subitem block" snippet chip (`conditionalSnippets`, gated on a subitem board)
+pre-filled with a real subitem name (`subitemNamePicker` caches `state.groupSubitemNames`). Verified:
+`test:engine` +3 (per-name scope, missing → else, nested blocks).
+
 **Generated Rule IDs include the group (2026-06-24):** the configurator's "Generate" button now
 produces `{group-slug}-{trigger}-{random}` (was `{trigger}-{random}`) so the rule list shows which
 group a rule targets. `generateRuleId()` slugifies the selected group's title (`web/app.js`); falls
 back to `{trigger}-{random}` when no group is picked. UI-only; server treats IDs as opaque.
 
-**All offline suites pass: `npm test` → 124 checks (ingress 10, engine 56, queue 24, polish 6,
+**All offline suites pass: `npm test` → 127 checks (ingress 10, engine 59, queue 24, polish 6,
 cutover 9, admin 7, exchange 12).** The legacy PHP plugin is still untouched and live.
 
 **Configurator:** run `npm run dev` (or `npm start`) and open `http://localhost:<PORT>/`. If
@@ -365,7 +378,9 @@ item/subitem column's number × a chosen unit, read at event time) | `absolute` 
 
 **Message templating** (email body/subject, Slack text, set_column value) supports `{{dotted.paths}}`
 plus block conditionals: `{{#if path}}…{{else}}…{{/if}}`, `{{#unless path}}…{{/unless}}`,
-`{{#ifEquals path "value"}}…{{/ifEquals}}` (case-insensitive), nestable — see `src/util/template.ts`.
+`{{#ifEquals path "value"}}…{{/ifEquals}}` (case-insensitive), nestable — and a named-subitem scope
+block `{{#subitem "Exact Name"}}…{{/subitem}}` (inside it `{{name}}`/`{{column.<id>}}`/conditionals
+refer to that subitem; lets one message describe several subitems) — see `src/util/template.ts`.
 
 ### Behavioral defaults (decided)
 1. **N-days** = calendar days, counted from when the item **entered the group** (not creation).

@@ -192,6 +192,8 @@ function conditionalSnippets() {
   ];
   if (exSub) {
     out.push({ label: 'if subitem', snippet: `{{#ifEquals subitem.column.${exSub} "Done"}}received{{else}}pending{{/ifEquals}}`, hint: 'Branch on the triggering subitem’s column value' });
+    const exName = (state.groupSubitemNames && state.groupSubitemNames[0]) || 'Subitem name';
+    out.push({ label: 'subitem block', snippet: `{{#subitem "${exName}"}}{{#ifEquals column.${exSub} "Done"}}done{{else}}pending{{/ifEquals}}{{/subitem}}`, hint: 'Scope to a named subitem (edit the name); inside, {{name}}, {{column.<id>}} and conditionals refer to that subitem' });
   }
   return out;
 }
@@ -259,6 +261,7 @@ function subitemNamePicker(initValue) {
       .then((r) => r.json())
       .then((d) => {
         names = d.names || [];
+        state.groupSubitemNames = names; // cache so snippet chips can suggest a real name
         input.placeholder = names.length ? 'subitem — pick or type' : 'no subitems found in group — type a name';
         if (document.activeElement === input) renderList();
       })
@@ -658,7 +661,11 @@ function makeActionRow(init) {
       const editor = richEditor(i?.text, 'Slack message — {{item.name}} entered {{group.title}}');
       const subPicker = state.structure?.subitemBoard ? subitemNamePicker(i?.subitemName) : null;
       params.append(when.node, el('label', { text: 'Webhook URL' }), url, el('label', { text: 'Message (HTML → Slack mrkdwn)' }), editor.node);
-      if (subPicker) params.append(el('label', { text: 'Subitem for {{subitem.*}} (optional)' }), subPicker.node);
+      if (subPicker) params.append(
+        el('label', { text: 'Subitem for {{subitem.*}} (optional)' }),
+        subPicker.node,
+        el('span', { class: 'hint', text: 'Binds {{subitem.*}} to one subitem for the whole message. To reference several subitems, use a {{#subitem "Name"}}…{{/subitem}} block in the body instead.' }),
+      );
       serializeParams = () => {
         const a = { when: when.serialize(), text: editor.getHtml() };
         if (url.value.trim()) a.webhookUrl = url.value.trim();
@@ -680,7 +687,11 @@ function makeActionRow(init) {
         el('label', { text: 'Subject' }), subject,
         el('label', { text: 'Body (rich HTML)' }), editor.node,
       );
-      if (subPicker) params.append(el('label', { text: 'Subitem for {{subitem.*}} (optional)' }), subPicker.node);
+      if (subPicker) params.append(
+        el('label', { text: 'Subitem for {{subitem.*}} (optional)' }),
+        subPicker.node,
+        el('span', { class: 'hint', text: 'Binds {{subitem.*}} to one subitem for the whole message. To reference several subitems, use a {{#subitem "Name"}}…{{/subitem}} block in the body instead.' }),
+      );
       serializeParams = () => {
         const a = { when: when.serialize(), subject: subject.value, body: editor.getHtml() };
         const list = to.value.split(',').map((s) => s.trim()).filter(Boolean);
@@ -881,7 +892,8 @@ async function loadBoard() {
     if (!res.ok) throw new Error((await res.json()).error || res.statusText);
     state.structure = await res.json();
     state.boardId = id;
-    scopeGroupCombo = combo([{ value: '', label: '— select group —' }, ...groupOptions()], { placeholder: '— select group —', onChange: () => renderTriggerParams() });
+    state.groupSubitemNames = null; // reset cached subitem-name suggestions for the new board
+    scopeGroupCombo = combo([{ value: '', label: '— select group —' }, ...groupOptions()], { placeholder: '— select group —', onChange: () => { state.groupSubitemNames = null; renderTriggerParams(); } });
     const mount = $('scopeGroupMount'); mount.innerHTML = ''; mount.appendChild(scopeGroupCombo.node);
     renderTriggerParams();
     $('builderCard').classList.remove('disabled');
