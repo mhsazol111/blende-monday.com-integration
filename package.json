@@ -21,6 +21,7 @@
     "test:cutover": "tsx src/scripts/test-cutover.ts",
     "test:admin": "RULES_PATH=./.test-rules.json tsx src/scripts/test-admin.ts",
     "test:exchange": "tsx src/scripts/test-exchange.ts",
+    "test:email": "tsx src/scripts/send-test-email.ts",
     "test": "npm run test:ingress && npm run test:engine && npm run test:queue && npm run test:polish && npm run test:cutover && npm run test:admin && npm run test:exchange"
   },
   "dependencies": {

@@ -1,240 +1,212 @@
 # Automation rules — build guide
 
-Step-by-step instructions for creating the client's 7 automation rules in the
-configurator UI. **No code** — just what to click. Assumes you know the pipeline
-in `CLAUDE.md`.
+How to configure the client's automations in the configurator UI. This is the technical
+reference (control names, board IDs, exact steps). For a plain-language version to share
+with the client, see **[CLIENT-GUIDE.md](./CLIENT-GUIDE.md)**.
+
+Board: **NP - Testing** (`18403436566`). Facts below are from `npm run discover`
+(2026-07-01).
 
 ---
 
-## 0. Before you start
+## 1. Getting started
 
-1. Open the configurator: `https://<domain>/` (append `?secret=<WEBHOOK_SHARED_SECRET>`
-   if that env var is set — saving fails without it).
-2. On the **Rules** tab the board auto-loads. If not, load board `18403436566`
-   ("NP - Testing").
-3. Each rule below = **Rules → New rule**, fill in Trigger / Scope / Conditions /
-   Actions, then **Save rule** (validates + saves + hot-reloads the engine).
-4. Make sure the board's monday webhooks are registered (**Board & connect** tab →
-   "Connect this board"). Without them, no live events arrive.
+1. Open the configurator at `https://<domain>/`. If `WEBHOOK_SHARED_SECRET` is set,
+   append `?secret=<value>` — saving fails without it.
+2. The board loads automatically on the **Rules** tab.
+3. **Board & connect** tab → **Connect this board** registers the monday webhooks that
+   deliver live events. Without it, triggers never fire (see §5).
+4. Build a rule with **New rule**, fill in Trigger / Scope / Conditions / Actions, then
+   **Save rule** (it validates, saves, and reloads immediately).
 
-### Builder legend (the user's words → the control to use)
+---
 
-| You want… | Trigger dropdown | Notes |
-|---|---|---|
-| "when an item enters group X" | **Item entered the group** | pick group in Scope |
-| "when an item leaves group X" | **Item left the group** | |
-| "when status becomes Y" | **Item column changed to** | Column = Status, value = Y |
-| "when subitem is Done" | **Subitem set (status →)** | pick subitem + Done |
-| "after N days sitting in the group" | **Item in group for N days** | timed; armed at entry |
+## 2. Anatomy of a rule
 
-| You want… | Action dropdown |
+Every rule is: **WHEN** (trigger) + **scope** (one group) + **only if** (conditions) +
+**do** (actions, each with its own timing).
+
+### Triggers
+
+| Trigger dropdown | Fires when |
 |---|---|
-| Slack notification | **Send Slack** |
-| Email | **Send email** |
-| Tick a monday field / flip a status | **Set a monday value (item/subitem)** |
-| Stop all queued reminders for the item | **Clear pending actions** |
-| Copy template subitems in | **Clone template subitems** |
+| **Item entered the group** | an item is created in, or moved into, the scoped group |
+| **Item left the group** | an item moves out of the scoped group |
+| **Item column changed to** | a column changes — to any value, or to a specific value |
+| **Subitem set (status →)** | a named subitem's status reaches a chosen label |
+| **All of these subitems set (any order)** | the last of several named subitems reaches the label |
+| **Item in group for N days** | an item has sat in the group for N days (time-based) |
 
-**Timing of an action** (the `when` dropdown on each action):
-`immediately` · `after a delay` (Days/Hours/Minutes) · `after a delay from a column
+### Conditions — a **Subject → Condition → Value** row
+
+| Control | Options |
+|---|---|
+| **Subject** | `Item column` · `Subitem` · `Item's group` |
+| **Condition** | column/subitem: `is equal` · `is not equal` · `has any value` · `has no value` — group: `is in` · `moved from` |
+| **Value** | a **label dropdown** for status/dropdown columns, a **text field** otherwise, and **hidden** for the has-value operators |
+
+A status column is just an Item column whose value picker lists its labels. Multiple
+conditions are AND within a group; add a **"+ OR group"** for OR-of-ANDs.
+
+### Actions
+
+| Action dropdown | Does |
+|---|---|
+| **Send email** | subject + rich body; recipients as literal addresses and/or a People column |
+| **Send Slack** | rich message to the default webhook or a per-action one |
+| **Set a monday value (item/subitem)** | writes a column on the item or a named subitem |
+| **Clear pending actions** | cancels queued actions — **All**, or **Only specific rules** |
+| **Clone template subitems** | copies the matching Templates item's subitems onto the item |
+
+### Timing (the `when` on each action)
+
+`immediately` · `after a delay` (Days / Hours / Minutes) · `after a delay from a column
 value` · `at a specific time`.
 
 ---
 
-## ⚠️ Read this first — behaviors that shape every rule below
+## 3. How timing and conditions behave
 
-These are engine facts (verified in `src/rules/engine.ts`) that change how you must
-build the rules:
-
-1. **"Item in group for N days" now honors Conditions — at fire time.** The timed
-   trigger still *arms* on group entry (scope only), but each reminder **re-checks the
-   rule's Conditions when it comes due**, re-reading the item live. If the condition no
-   longer holds (patient signed / booked), the reminder **self-skips**. So "remind
-   unless signed/booked" is a **condition on the timed rule** — no separate cancel rule
-   needed. (Fire-time re-check applies to timed rules only.)
-2. **Delays stack on the N-days base.** For a timed rule, an action's `when` layers
-   on top of the N-days mark. To get "at 1 week, then +1 week, then +1 week" you set
-   the three actions to `immediately`, `after a delay 7 days`, `after a delay 14 days`
-   (7 → 14 → 21 days total). Each fires only if the condition still holds at that time.
-3. **"Clear pending actions" can be scoped.** Choose **All pending actions** (cancels
-   every queued action for the item — the legacy behavior) or **Only specific rules**
-   (cancels just the chosen rules' queued actions). Use the scoped form for cross-rule
-   cancels so overlapping chains don't wipe each other — see **Overlaps** at the bottom.
-4. **Leaving the group auto-cancels** that item's pending actions. So "cancel by
-   leaving" needs no rule — it's automatic. Re-entering re-arms and resets the clock.
-5. **Timed rules only arm on a fresh entry.** Items already sitting in a group when
-   you create the rule won't get reminders until they leave and re-enter. Same for
-   entry/column triggers — they fire on future events only.
-6. **A rule must be scoped to one group.** There is no "all groups" wildcard in the
-   builder, so "all groups" rules = one rule per group.
-7. **Column-change triggers match the NEW value only** — they can't require a
-   specific previous value (only group *moves* can, via "moved from group").
-8. **Timed payloads render at arm time** — `{{...}}` variables capture the item's
-   state at group entry, not a week later.
+- **A rule only reacts to future events.** An item must enter the group, or the change
+  must happen, *after* the rule exists. Items already sitting in a group get nothing until
+  they leave and re-enter.
+- **"Item in group for N days" is time-based.** It starts counting when the item enters
+  the group. Leaving the group cancels its pending reminders; re-entering restarts the
+  clock.
+- **Conditions on a timed rule are checked when each reminder is due**, against the item's
+  live state. If the condition no longer holds, that reminder is skipped. This is how a
+  chain "stops itself" once a patient signs or books — no separate cancel rule needed.
+- **Delays stack on the N-day mark.** On a 7-day rule, an action set to `after a delay of
+  7 days` fires on day 14, and `14 days` on day 21.
+- **Clear pending actions** cancels every queued action for the item, or only the ones
+  from chosen rules (**Only specific rules**). Use the scoped form to avoid wiping
+  unrelated chains — see §7.
+- **A rule targets one group.** There's no "all groups" option — repeat the rule per
+  group.
+- **"Item column changed to" matches the new value only** — it can't require a specific
+  previous value. (Only group *moves* can, via the `moved from` condition.)
+- **Scheduled messages are composed when the item enters the group**, so `{{variables}}`
+  reflect the state at that moment, not at send time. For a clone→message rule, place the
+  message **after** the clone so it sees the new subitems.
 
 ---
 
-## Rule 1 — Unscheduled Intake: welcome drip
+## 4. Board reference (from discovery)
 
-> Enter Unscheduled Intake → email A now, Slack A at 48h, email B at 72h. Cancel by
-> leaving.
+**Groups** — Unscheduled Intake `group_mm2wbwep` · NP Intake `group_title` · New HPSM
+`group_mm1nrj7r` · NP Consultation `group_mm1q43sd` · On Lok `group_mm1qxgcp` · Calling
+PCP `group_mm1qzc41` · In-office w/ Halsey `group_mm1q5y2h` · In-office w/ Lee
+`group_mm1qkfsj` · In-office w/ Vu `group_mm1qbqpv` · Hospital - CPMC `group_mm1qt38e` ·
+Hospital - Kaiser `group_mm1q2dcd` · Post-Surgery `group_mm1q34g` · Templates `topics`.
 
-- **Trigger:** Item entered the group
-- **Scope:** group **Unscheduled Intake**
-- **Conditions:** none
-- **Actions:**
-  1. **Send email** — email A — `when = immediately`
-  2. **Send Slack** — notification A — `when = after a delay → 48 Hours` (or 2 Days)
-  3. **Send email** — email B — `when = after a delay → 72 Hours` (or 3 Days)
-- **Cancel:** none needed — moving the item out of the group auto-clears actions 2 & 3.
+**Item `status` labels** — Working on it (0) · Done (1) · Stuck (2) · **Unscheduled** (3)
+· **Scheduled** (5).
 
----
+**Lead Status** (`color_mm2wt4td`) labels — **Cold** (1). *(No "Cool" yet — see Rule 5.)*
 
-## Rule 2 — NP Intake: welcome + x-ray nudge
+**Subitem board** `18403436575` — `status` labels Working on it (0) · **Done** (1) · Stuck
+(2); template-source column `text_mm1n5vbd`.
 
-> Enter NP Intake → welcome email now, tick the "welcome email sent" field, Slack B
-> at 48h. No cancel.
+**People column** for recipients — `person`.
 
-- **Trigger:** Item entered the group
-- **Scope:** group **NP Intake**
-- **Conditions:** none
-- **Actions:**
-  1. **Send email** — email 1 (welcome) — `when = immediately`
-  2. **Set a monday value** — Target **Item**, pick the "welcome email sent" column,
-     set its value (for a status/checkbox column choose the label) — `when = immediately`
-  3. **Send Slack** — notification B (request x-rays) — `when = after a delay → 48 Hours`
-- **Cancel:** none.
-- **Note:** if the item leaves NP Intake before 48h, action 3 auto-cancels (item 4
-  above) — usually fine.
+> Rules 2, 6, 7 reference specific subitems by name. The subitem picker lists real subitem
+> names in the group — confirm the exact names there when building.
 
 ---
 
-## Rule 3 — NP Intake: "Canceled" abandoned-cart drip
+## 5. Webhooks per trigger
 
-> Status becomes **Canceled** → email C now, Slack C at 48h, email B 72h after that.
-> Cancel when status becomes **Scheduled**.
+Registered from **Board & connect → Connect this board**.
 
-Two rules.
+| Trigger | Needs webhook |
+|---|---|
+| Item entered / left the group | `create_item` + `item_moved_to_any_group` |
+| Item column changed to | `change_column_value` |
+| Subitem set / All subitems set | `change_subitem_column_value` |
+| Item in group for N days | none (time-based, runs in the service) |
 
-**Rule 3a — the drip**
-- **Trigger:** Item column changed to → Column **Status**, value **Canceled**
-- **Scope:** group **NP Intake**
-- **Actions:**
-  1. **Send email** — email C — `when = immediately`
-  2. **Send Slack** — notification C — `when = after a delay → 48 Hours`
-  3. **Send email** — email B — `when = after a delay → 120 Hours` *(48 + 72 — see note)*
-- **Note on "72h after that":** I read it as 72h **after the Slack**, i.e. 120h from
-  the trigger. If you meant 72h from the trigger instead, use `72 Hours`.
-- **Note:** the trigger fires whenever Status becomes Canceled regardless of the
-  previous status — the engine can't require "was Scheduled" for a column change.
-
-**Rule 3b — cancel on re-schedule**
-- **Trigger:** Item column changed to → Column **Status**, value **Scheduled**
-- **Scope:** group **NP Intake**
-- **Actions:** **Clear pending actions → Only specific rules → Rule 3a** (so it cancels
-  only the abandoned-cart drip, not Rule 2's x-ray Slack or Rule 5's 1-month reminder).
-- **⚠️ Overlap (if you use "All pending actions" instead):** it clears *all* pending for
-  the item — including Rule 2's 48h Slack
-  and Rule 5's 1-month reminder if they're still queued. See Overlaps.
+> The prod board already has `create_item`, `item_moved_to_any_group`, and
+> `change_subitem_column_value`, but **not** `change_column_value`. Register it before
+> relying on **Rule 3** (a column-changed trigger).
 
 ---
 
-## Rule 4 — Clone templates on entry (per group)
+## 6. The rules
 
-> When an item enters a group, clone its template subitems.
+### Rule 1 — Unscheduled Intake: welcome drip
+Enter the group → email now, Slack at 48h, email at 72h. Cancels itself if the item leaves.
 
-- **Trigger:** Item entered the group
-- **Scope:** the group
-- **Conditions:** none
-- **Actions:** **Clone template subitems**
-- **⚠️ No "all groups" wildcard** — create **one copy of this rule per group** that
-  should clone. Cloning only does something where a matching Templates item exists.
-- **Note:** this replaces the retired PHP cloner (its logic now lives in the service),
-  so there's no double-clone risk — just don't add two clone rules for the same group.
+- **Trigger:** Item entered the group · **Scope:** Unscheduled Intake (`group_mm2wbwep`)
+- **Actions:** ① Send email (email A) `immediately` · ② Send Slack (notif A) `after 48 Hours` · ③ Send email (email B) `after 72 Hours`
+- No cancel rule — leaving the group auto-clears the pending 48h/72h sends.
 
----
+### Rule 2 — NP Intake: welcome + x-ray nudge
+Enter the group → welcome email, mark the welcome-email subitem done, Slack at 48h.
 
-## Rule 5 — Stale-in-bucket → cool + archive nudge (per bucket)
+- **Trigger:** Item entered the group · **Scope:** NP Intake (`group_title`)
+- **Actions:** ① Send email (email 1) `immediately` · ② Set a monday value → Target **Subitem** → the welcome-email subitem → Status = **Done** `immediately` · ③ Send Slack (notif B, request x-rays) `after 48 Hours`
+- The subitem must exist on the item first. If subitems are cloned on entry, put a **Clone
+  template subitems** action before ②.
 
-> Patient in a bucket > 1 month → set Lead Status = **Cool** and Slack the coordinator
-> to archive.
+### Rule 3 — NP Intake: "Unscheduled" abandoned-cart drip
+Status → Unscheduled → email now, Slack at 48h, email at 120h. Stops if status → Scheduled.
 
-- **Trigger:** Item in group for N days → **30** days *(leave "Repeat every" blank)*
-- **Scope:** the bucket group
-- **Conditions:** none (none needed here — the 1-month mark alone is the trigger)
-- **Actions:**
-  1. **Set a monday value** — Target **Item**, Column **Lead Status** (`color_mm2wt4td`),
-     value = label **Cool** — `when = immediately` (fires at the 30-day mark)
-  2. **Send Slack** — coordinator, "archive this patient" — `when = immediately`
-- **Buckets → make one rule each** (same settings, different Scope): **NP Intake**,
-  **In-office w/ Lee**, **In-office w/ Vu**, **Hospital - CPMC**, **Hospital - Kaiser**,
-  **Post-Surgery**. (6 rules.)
-- **Notes:** "Repeat every N days" is left blank — recurring repeat isn't wired in the
-  engine yet, so treat this as one-shot. Confirm the Lead Status column has a label
-  literally named **Cool** (distinct from Cold).
+**3a — the drip**
+- **Trigger:** Item column changed to → Column **Status** → Fires on **A specific value** → **Unscheduled** · **Scope:** NP Intake
+- **Actions:** ① Send email (email C) `immediately` · ② Send Slack (notif C) `after 48 Hours` · ③ Send email (email B) `after 120 Hours` *(48 + 72 — see note)*
+- Needs the `change_column_value` webhook (§5).
+- *"72h after that" reading:* 72h after the Slack = 120h from the trigger. For 72h from the
+  trigger instead, use `72 Hours`.
 
----
+**3b — stop on re-schedule**
+- **Trigger:** Item column changed to → Column **Status** → Fires on **A specific value** → **Scheduled** · **Scope:** NP Intake
+- **Action:** Clear pending actions → **Only specific rules → Rule 3a** (leaves Rules 2 & 5 untouched).
 
-## Rule 6 — NP Consultation: treatment plan not signed
+### Rule 4 — Clone templates on entry (per group)
+Enter the group → clone its template subitems.
 
-> 1 week in NP Consultation and plan not signed → reminder-to-call, then email, then
-> phone-call. Each step self-cancels once the plan subitem is signed.
+- **Trigger:** Item entered the group · **Scope:** the group · **Action:** Clone template subitems
+- One rule per group (no "all groups"). Cloning acts only where a matching Templates item exists.
 
-**One rule** (no separate cancel rule — the condition gates each send at fire time).
-- **Trigger:** Item in group for N days → **7** days
-- **Scope:** group **NP Consultation**
-- **Conditions:** Subject **Subitem** → the treatment-plan subitem, field **Status**,
-  operator **is not equal**, value **Done**
-- **Actions:**
-  1. **Send Slack** — notification E (reminder to call) — `when = immediately` (day 7)
-  2. **Send email** — email 2 — `when = after a delay → 7 Days` (day 14)
-  3. **Send Slack** — notification F (phone call) — `when = after a delay → 14 Days` (day 21)
-- **How the cancel works:** at day 7/14/21 the worker re-reads the subitem; if it's now
-  **Done**, that step is skipped. No cancel rule, and it doesn't touch any other chain.
+### Rule 5 — Stale in bucket → cool-down + archive nudge (per bucket)
+In a bucket > 1 month → set Lead Status and Slack the coordinator to archive.
 
----
+- **Trigger:** Item in group for N days → **30** · **Scope:** the bucket group
+- **Actions:** ① Set a monday value → Item → **Lead Status** = **Cold** `immediately` · ② Send Slack (coordinator) `immediately`
+- Uses **Cold** for now; switch to **Cool** once that label is added to Lead Status.
+- **One rule per bucket:** NP Intake `group_title` · In-office w/ Lee `group_mm1qkfsj` ·
+  In-office w/ Vu `group_mm1qbqpv` · Hospital - CPMC `group_mm1qt38e` · Hospital - Kaiser
+  `group_mm1q2dcd` · Post-Surgery `group_mm1q34g`.
 
-## Rule 7 — NP Consultation: treatment not booked
+### Rule 6 — NP Consultation: treatment plan not signed
+1 week in the group and plan not signed → call reminder, +1wk email, +1wk phone-call.
 
-> 1 week in NP Consultation and treatment not booked → reminder-to-call, then email,
-> then phone-call-with-doctor. Each step self-cancels once status is Treatment Scheduled.
+- **Trigger:** Item in group for N days → **7** · **Scope:** NP Consultation (`group_mm1q43sd`)
+- **Condition:** Subject **Subitem** → the treatment-plan subitem → Status → **is not equal** → **Done**
+- **Actions:** ① Send Slack (notif E, call) `immediately` (day 7) · ② Send email (email 2) `after 7 Days` (day 14) · ③ Send Slack (notif F, phone) `after 14 Days` (day 21)
+- Each step is skipped if the subitem is **Done** by the time it's due — no cancel rule.
 
-**One rule.**
-- **Trigger:** Item in group for N days → **7** days
-- **Scope:** group **NP Consultation**
-- **Conditions:** Subject **Item column** → field **Status**, operator **is not equal**,
-  value **Treatment Scheduled**
-- **Actions:**
-  1. **Send Slack** — reminder to call — `when = immediately` (day 7)
-  2. **Send email** — email — `when = after a delay → 7 Days` (day 14)
-  3. **Send Slack** — phone call with doctor — `when = after a delay → 14 Days` (day 21)
-- Each step fires only while status is still not Treatment Scheduled. *(The original
-  "cancel if … status not changed to treatment scheduled" reads as a typo — the intent
-  is: stop reminding once it **is** Treatment Scheduled.)*
+### Rule 7 — NP Consultation: treatment not booked
+1 week in the group and not booked → call reminder, +1wk email, +1wk phone-call w/ doctor.
+
+- **Trigger:** Item in group for N days → **7** · **Scope:** NP Consultation (`group_mm1q43sd`)
+- **Condition:** Subject **Subitem** → the booking subitem → Status → **is not equal** → **Done** *(booking is tracked on a subitem, like Rule 6)*
+- **Actions:** ① Send Slack (call) `immediately` (day 7) · ② Send email `after 7 Days` (day 14) · ③ Send Slack (phone w/ doctor) `after 14 Days` (day 21)
+- Each step is skipped once the booking subitem is **Done**.
 
 ---
 
-## ⚠️ Overlaps & conflicts to keep in mind
+## 7. Overlaps to keep in mind
 
-Two mechanisms now keep overlapping chains from interfering — use the right one:
-
-1. **NP Consultation (Rules 6 & 7 share a group and items).** Both arm on entry, so an
-   item gets **6** queued actions. Each step carries its **own condition** (6 = "plan not
-   signed", 7 = "status not Treatment Scheduled") and re-checks it at fire time, so
-   signing the plan silences only Rule 6 and booking silences only Rule 7 — they no
-   longer cross-cancel. No cancel rules involved.
-
-2. **NP Intake (Rules 2, 3, 5 share the group).** Rule 3b uses **Clear pending → Only
-   specific rules → Rule 3a**, so re-scheduling cancels only the abandoned-cart drip and
-   leaves Rule 2's x-ray Slack and Rule 5's 1-month reminder intact. (Choosing "All
-   pending actions" would wipe those too — only do that if that's genuinely what you
-   want.)
-
-3. **Leaving a group already cancels** — you don't need cancel rules for "cancel by
-   leaving" (Rule 1). For in-place state changes, prefer a **condition on the timed
-   rule** (self-skip) and reach for **Clear pending → specific rules** only when the
-   cancel is triggered by a *different* event than the chain's own condition.
-
-4. **Cloning (Rule 4)** — the legacy PHP cloner is retired and its logic is fully in
-   this service, so there's no double-clone risk; just don't add two clone rules for the
-   same group.
+- **NP Consultation (Rules 6 & 7)** run on the same items — an item gets both chains (6
+  reminders). Each step carries its own condition and re-checks it when due, so signing
+  the plan silences only Rule 6 and booking silences only Rule 7. They don't cross-cancel.
+- **NP Intake (Rules 2, 3, 5)** share the group. Rule 3b uses **Clear pending → Only
+  specific rules → Rule 3a**, so re-scheduling cancels only the abandoned-cart chain and
+  leaves Rule 2's and Rule 5's pending sends alone. ("All pending actions" would wipe them
+  too.)
+- **Leaving a group already cancels** that item's pending actions, so "cancel by leaving"
+  needs no rule. For in-place changes, prefer a **condition on the timed rule** (self-skip)
+  and use **Clear pending → specific rules** only when a *different* event should stop a
+  chain.
+- **Cloning (Rule 4)** — don't add two clone rules for the same group.
