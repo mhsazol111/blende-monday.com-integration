@@ -1,0 +1,59 @@
+{
+  "rules": [
+    {
+      "id": "intake-entered-group-example",
+      "enabled": true,
+      "boardId": 123456789,
+      "scope": {
+        "groupId": "group_example_intake"
+      },
+      "trigger": {
+        "type": "item_entered_group"
+      },
+      "actions": [
+        {
+          "type": "email",
+          "when": { "mode": "immediate" },
+          "subject": "Welcome, {{item.name}}",
+          "body": "<p>Hi {{item.name}},</p><p>Thanks for reaching out. We'll be in touch shortly.</p>",
+          "to": ["team@example.com"],
+          "toFromColumn": "person"
+        },
+        {
+          "type": "slack",
+          "when": { "mode": "relative", "days": 0, "hours": 48, "minutes": 0 },
+          "text": "{{item.name}} has been in {{group.title}} for 2 days with no follow-up."
+        }
+      ]
+    },
+    {
+      "id": "consultation-subitem-set-example",
+      "enabled": true,
+      "boardId": 123456789,
+      "scope": {
+        "groupId": "group_example_consultation"
+      },
+      "trigger": {
+        "type": "subitem_checked",
+        "subitemName": "Sign treatment plan",
+        "label": "Done"
+      },
+      "conditionGroups": [
+        {
+          "conditions": [
+            { "type": "column_equals", "columnId": "status", "label": "Scheduled" }
+          ]
+        }
+      ],
+      "actions": [
+        {
+          "type": "set_column",
+          "when": { "mode": "immediate" },
+          "target": "item",
+          "columnId": "status",
+          "value": "1"
+        }
+      ]
+    }
+  ]
+}

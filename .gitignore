@@ -13,6 +13,10 @@ dist/
 *.db
 data/
 
+# Live ruleset — runtime state written by the configurator, per-server and often
+# with real data. Track config/rules.example.json instead (sanitized reference).
+config/rules.json
+
 # OS / editor
 .DS_Store
 .vscode/
