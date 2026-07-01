@@ -2,14 +2,15 @@
  * Send a single test email through the real configured transport (Graph/SMTP/
  * dry-run, per EMAIL_PROVIDER + .env) to verify email credentials end-to-end.
  *
- *   npm run test:email                 # sends to the default address below
- *   npm run test:email you@example.com # sends to a given address
+ *   npm run test:email you@example.com # sends to the given address
+ *   TEST_EMAIL_TO=you@example.com npm run test:email
  *
  * NOT part of `npm test` — it makes a live send.
  */
 import { defaultSenders } from '../senders/index.js';
 
-const to = process.argv[2] || 'you@example.com';
+const to: string = process.argv[2] || process.env.TEST_EMAIL_TO || '';
+if (!to) throw new Error('Usage: npm run test:email <recipient>  (or set TEST_EMAIL_TO)');
 
 async function main() {
   console.log(`Sending test email to ${to} ...`);
