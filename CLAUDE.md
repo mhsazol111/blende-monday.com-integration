@@ -19,11 +19,11 @@ Actions are **email** and/or **Slack** notifications that can fire **immediately
 automated notifications that monday's built-in automations can't express (multi-subitem conditions,
 day-based scheduling, "clear all queued actions for an item", arbitrary email content).
 
-**History:** the original proof-of-concept is `monday-subitem-cloner.php`, a WordPress plugin that
-(a) clones template subitems on item create/move and (b) fires one hardcoded Slack+email when an
-item enters one group. Everything in it is hardcoded. WordPress was only a fast test host; we are
-moving to a standalone service. **The PHP plugin stays live in production until Phase 6 cutover** —
-do not break it.
+**History:** the original proof-of-concept was `monday-subitem-cloner.php`, a WordPress plugin that
+(a) cloned template subitems on item create/move and (b) fired one hardcoded Slack+email when an
+item entered one group. Everything in it was hardcoded. WordPress was only a fast test host.
+**That PHP plugin is now retired** — its behavior is fully ported into this standalone service
+(cloning → the `clone_template_subitems` action). No `.php` file remains in this repo.
 
 ---
 
@@ -113,7 +113,8 @@ debugging CLI `npm run webhooks -- [list|register|delete]` (`src/scripts/webhook
   - Live-verified read path: prod board `18403436566` already has 3 of the 4 managed events
     (`create_item`, `item_moved_to_any_group`, `change_subitem_column_value`) from earlier project
     testing — these are pre-existing, NOT created by this feature; only `change_column_value` is
-    missing. **Registration not run on prod** (PHP plugin still live; localhost can't register).
+    missing. **Registration not yet run on prod** (localhost can't register — must register from the
+    deployed HTTPS URL).
 
 **Configurator UX additions (2026-06-17):**
   - **Scheduled-actions (queue) management** — `GET /api/queue`, `POST /api/queue/:id/run` (dispatch
@@ -304,8 +305,42 @@ produces `{group-slug}-{trigger}-{random}` (was `{trigger}-{random}`) so the rul
 group a rule targets. `generateRuleId()` slugifies the selected group's title (`web/app.js`); falls
 back to `{trigger}-{random}` when no group is picked. UI-only; server treats IDs as opaque.
 
-**All offline suites pass: `npm test` → 128 checks (ingress 10, engine 60, queue 24, polish 6,
-cutover 9, admin 7, exchange 12).** The legacy PHP plugin is still untouched and live.
+**Fire-time condition re-check + scoped clear_pending + `subitem_not_checked` (2026-07-01):** two
+gaps found while authoring the client's rules (`docs/AUTOMATION-RULES.md`), plus a mirror condition.
+  - **Timed rules now honor Conditions — at fire time.** `item_in_group_for_days` still arms on group
+    entry (scope only, in `onEnteredGroup`), but the worker now calls a new
+    `RulesEngine.shouldFireQueued(ruleId, itemId)` before each dispatch: for a timed rule **with
+    conditions**, it re-hydrates the item and re-evaluates `conditionsPass`; if it no longer holds,
+    the action is skipped and `store.markCancelled`ed. So a "remind unless signed/booked" reminder
+    self-cancels — no cancel rule needed. Non-timed / condition-less / un-hydratable → fires (never
+    silently drop). `runDueActions` returns a new `skipped` count. This supersedes the old behavior
+    where timed-rule conditions were accepted by the UI/loader but ignored by the engine.
+  - **`clear_pending` is now scopable.** `ClearPendingAction` gained `scope?: 'all' | 'rules'` +
+    `ruleIds?: string[]`; `store.cancelPendingForItem(itemId, ruleIds?)` adds `AND rule_id IN (…)`
+    when scoped. Auto-clear-on-leave/move still pass no ruleIds (clear all). UI: the clear_pending
+    action editor has an "All pending actions" / "Only specific rules" select + a rule-ID checkbox
+    list. Legacy `{ type: 'clear_pending' }` rules are unchanged (default = all).
+  - **New `subitem_not_checked` condition** ("Subitem is not") — the negation of `subitem_checked`,
+    so "treatment plan is NOT Done" is expressible (needed for the re-check to gate Rule 6). Mirrors
+    the `status_is` / `status_is_not` pair; UI reuses the same row renderer.
+  - No DB schema change (the queue already stores `rule_id`). Verified: `test:queue` +8 (24→32),
+    `test:engine` +6 (60→66).
+
+**Condition builder → Field/Operator/Value (2026-07-01):** the configurator's condition rows were a
+flat list of nine fixed types (`status_is`, `status_is_not`, `column_equals`, …). Rebuilt as a
+query-builder — **Subject** (Item column / Subitem / Item's group) → **Operator** (is equal / is not
+equal / has any value / has no value; group: is in / moved from) → **Value** (a label dropdown when
+the chosen column has labels, else a text field; hidden for the "has value" operators). `web/app.js`
+`makeConditionRow` rewritten with `decodeCondition` (reverse-maps saved conditions, incl. legacy
+`status_is`/`status_is_not`, back into the controls). Engine gained one additive type
+`column_not_equals` (`conditionPass`, `src/rules/types.ts`) so "is not equal" on a normal column
+serializes cleanly; all legacy types still recognized, so saved rules are unaffected (editing a
+`status_is` rule re-saves it as `column_equals`). UI-only + 1 engine type; `test:engine` +2 (66→68).
+
+**All offline suites pass: `npm test` → 144 checks (ingress 10, engine 68, queue 32, polish 6,
+cutover 9, admin 7, exchange 12).** The former PHP plugin is **retired** — its cloning logic is fully
+ported to `src/monday/clone.ts` (exposed as the `clone_template_subitems` action), so nothing outside
+this service processes the board.
 
 **Configurator:** run `npm run dev` (or `npm start`) and open `http://localhost:<PORT>/`. If
 `WEBHOOK_SHARED_SECRET` is set, saving requires `?secret=<value>` on the URL.
@@ -366,20 +401,34 @@ A rule = one **trigger** + zero-or-more AND **conditions** + one-or-more **actio
 > normalizer, and UI to keep the surface minimal.
 
 ### Conditions (OR of AND groups)
-`subitem_checked` ("Subitem is" — a named subitem's status equals a label, incl. `''` = empty) ·
-`status_is` / `status_is_not` · `column_equals` / `column_empty` / `column_not_empty` · `in_group` ·
-`moved_from_group` (true when the move's `sourceGroupId` matches — pairs with `item_entered_group` to
-catch a specific transition).
+The configurator authors conditions as **Field → Operator → Value** (query-builder):
+- **Subject** = _Item column_ · _Subitem_ (a named subitem's status column) · _Item's group_.
+- **Operator** (column/subitem) = _is equal_ / _is not equal_ / _has any value_ / _has no value_;
+  (group) = _is in_ / _moved from_. A status column is just a column whose value picker shows its
+  labels (its hydrated `.text` is the label), so there's no separate "Status is" condition.
+
+Those map onto the engine's condition types (`src/rules/types.ts`): `column_equals` /
+`column_not_equals` / `column_empty` / `column_not_empty`, `subitem_checked` / `subitem_not_checked`
+(empty ⇒ `label:''`), `in_group`, `moved_from_group` (true when the move's `sourceGroupId` matches —
+pairs with `item_entered_group` to catch a specific transition). The engine still **recognizes**
+the legacy `status_is` / `status_is_not` (they run unchanged); the builder reverse-maps them to
+_Item column · is equal / is not equal_ on edit and re-saves them as `column_equals` /
+`column_not_equals`.
 
 Conditions live in **groups**: the rule matches when ANY `conditionGroups[]` group passes (OR), and
 within a group ALL conditions must pass (AND). Legacy flat `conditions[]` is honored as a single AND
-group.
+group. **For `item_in_group_for_days` (timed) rules, conditions are re-evaluated at *fire time*** by
+`RulesEngine.shouldFireQueued` (the worker re-hydrates + re-checks before each scheduled send), so a
+timed reminder self-skips once its condition stops holding — no cancel rule required.
 
 ### Actions
 - `email` — `to` (literal list) and/or `to_from_column` (people/email column), `subject`, `body` (rich HTML), `when`. Optional `subitemName` binds `{{subitem.*}}` to a named subitem (any trigger).
 - `slack` — `text` (rich HTML → mrkdwn), channel/webhook, `when`. Optional `subitemName` (same as email).
-- `clear_pending` — cancel all pending scheduled actions for the item.
-- `clone_template_subitems` — clone subitems from the matching Templates item (ported PHP cloner).
+- `clear_pending` — cancel pending scheduled actions for the item. `scope: 'all'` (default) cancels
+  every pending action; `scope: 'rules'` with `ruleIds[]` cancels only those rules' actions (so
+  overlapping chains don't wipe each other).
+- `clone_template_subitems` — clone subitems from the matching Templates item (ported from the former
+  PHP cloner).
 - `set_column` — write a value back to monday (`change_simple_column_value`): item or a named
   subitem; status uses the label **index**, other columns take text/number/date; supports `when`
   (so a delayed Slack + a status flip can fire together) and `{{templating}}` on the value. The
@@ -456,7 +505,8 @@ _From `npm run discover` on 2026-06-11. Use these IDs when authoring rules / fix
 
 ## 6. Build phases (non-breaking, incremental)
 
-The PHP plugin stays live; all wiring uses a **test board** until Phase 6.
+Early wiring used a **test board**; the former PHP plugin has since been retired (its behavior is
+ported into this service).
 
 - **P0 — Scaffolding & handoff** _(in progress)_: project skeleton, env, README, this file.
 - **P1 — monday read client + discovery**: GraphQL client + `npm run discover` listing

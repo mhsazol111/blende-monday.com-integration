@@ -20,7 +20,7 @@ export async function runDueActions(
   engine: RulesEngine,
   now: number = Date.now(),
   opts: WorkerOptions = {},
-): Promise<{ sent: number; failed: number; retried: number }> {
+): Promise<{ sent: number; failed: number; retried: number; skipped: number }> {
   const maxAttempts = opts.maxAttempts ?? env.workerMaxAttempts;
   const backoff = opts.retryBackoffMs ?? env.workerRetryBackoffMs;
 
@@ -28,8 +28,16 @@ export async function runDueActions(
   let sent = 0;
   let failed = 0;
   let retried = 0;
+  let skipped = 0;
   for (const row of due) {
     try {
+      // Fire-time gate: a timed reminder self-cancels if the state that justified it
+      // no longer holds (e.g. the patient signed/booked since it was armed).
+      if (!(await engine.shouldFireQueued(row.ruleId, row.itemId))) {
+        store.markCancelled(row.id);
+        skipped++;
+        continue;
+      }
       await engine.dispatch(row.actionType, row.payload);
       store.markSent(row.id, Date.now());
       sent++;
@@ -46,10 +54,10 @@ export async function runDueActions(
       }
     }
   }
-  if (sent || failed || retried) {
-    log.info(`Worker: ${sent} sent, ${retried} retrying, ${failed} failed.`);
+  if (sent || failed || retried || skipped) {
+    log.info(`Worker: ${sent} sent, ${retried} retrying, ${failed} failed, ${skipped} skipped.`);
   }
-  return { sent, failed, retried };
+  return { sent, failed, retried, skipped };
 }
 
 export interface WorkerHandle {

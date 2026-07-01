@@ -46,12 +46,16 @@ export type Condition =
   | { type: 'status_is'; columnId: string; label: string }
   | { type: 'status_is_not'; columnId: string; label: string }
   | { type: 'column_equals'; columnId: string; value: string }
+  | { type: 'column_not_equals'; columnId: string; value: string }
   | { type: 'column_empty'; columnId: string }
   | { type: 'column_not_empty'; columnId: string }
   | { type: 'in_group'; groupId: string }
   // True when the item was just moved OUT of `groupId` (uses monday's sourceGroupId).
   | { type: 'moved_from_group'; groupId: string }
-  | { type: 'subitem_checked'; columnId: string; label: string; subitemName?: string };
+  | { type: 'subitem_checked'; columnId: string; label: string; subitemName?: string }
+  // True when NO matching subitem is at `label` — the negation of subitem_checked
+  // (e.g. "treatment plan is NOT Done"). Mirrors status_is / status_is_not.
+  | { type: 'subitem_not_checked'; columnId: string; label: string; subitemName?: string };
 
 // ── Actions ─────────────────────────────────────────────────────────────────
 export interface EmailAction {
@@ -82,11 +86,19 @@ export interface SlackAction {
 
 export interface ClearPendingAction {
   type: 'clear_pending';
+  /**
+   * Which pending actions to cancel. Omitted/'all' → every pending action for the
+   * item (legacy behavior). 'rules' → only actions queued by the rules in `ruleIds`,
+   * so overlapping chains on the same item can be cancelled independently.
+   */
+  scope?: 'all' | 'rules';
+  /** Rule ids to cancel when `scope === 'rules'`. */
+  ruleIds?: string[];
 }
 
 /**
- * Clone subitems from a matching template item (ported from the legacy PHP
- * plugin). Immediate-only; intended for `item_entered_group` triggers.
+ * Clone subitems from a matching template item (ported from the former PHP
+ * plugin, now retired). Immediate-only; intended for `item_entered_group` triggers.
  */
 export interface CloneTemplateSubitemsAction {
   type: 'clone_template_subitems';

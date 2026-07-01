@@ -4,8 +4,9 @@ A config-driven notification & automation engine for monday.com.
 
 It receives monday webhooks and runs per-group rules of the form
 **WHEN** _trigger_ — **IF** _conditions_ — **THEN** _actions_ (email / Slack), where actions can
-fire immediately or be scheduled for later, and can be cleared per item. It replaces the temporary
-WordPress plugin (`monday-subitem-cloner.php`), which stays live until cutover (Phase 6).
+fire immediately or be scheduled for later, and can be cleared per item. It replaces a temporary
+WordPress plugin (the former `monday-subitem-cloner.php`), now retired — its cloning logic has been
+ported into this service.
 
 > **For AI agents / new sessions:** read [`CLAUDE.md`](./CLAUDE.md) first — it tracks the current
 > build phase, the agreed rule spec, and how to run things.
@@ -51,7 +52,6 @@ src/
   index.ts           Service entrypoint
 web/                 Configurator UI (index.html + app.js)
 config/rules.json    Rule definitions (editable via the configurator)
-monday-subitem-cloner.php   Legacy WP plugin (live until cutover)
 ```
 
 ## Deploy

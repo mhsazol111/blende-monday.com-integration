@@ -231,6 +231,22 @@ async function main() {
     check('condition status_is_not Done blocks when Done', r.matched === 0 && slacks.length === 0);
   }
 
+  // 6b) column_not_equals: passes when the column text differs, blocks when it matches.
+  {
+    const rules: Rule[] = [
+      {
+        id: 'cne', enabled: true, boardId: BOARD, scope: { groupId: GROUP },
+        trigger: { type: 'item_entered_group' },
+        conditions: [{ type: 'column_not_equals', columnId: 'status', value: 'Done' }],
+        actions: [{ type: 'slack', when: { mode: 'immediate' }, text: 'not done' }],
+      },
+    ];
+    const notDone = makeEngine(rules, makeItem({ columns: { status: { text: 'Working on it', value: null, type: 'color' } } }));
+    check('column_not_equals passes when text differs', (await notDone.engine.handleEvent(entered(100))).matched === 1);
+    const isDone = makeEngine(rules, makeItem({ columns: { status: { text: 'Done', value: null, type: 'color' } } }));
+    check('column_not_equals blocks when text matches', (await isDone.engine.handleEvent(entered(100))).matched === 0);
+  }
+
   // 7) scheduled action is deferred (not executed) in Phase 3.
   {
     const scheduled: Rule[] = [
@@ -676,6 +692,55 @@ async function main() {
     before = Date.now();
     await mk({ mode: 'relative_from_column', columnId: 'num', unit: 'days' }).handleEvent(entered(100));
     check('timed + relative_from_column → N-days + column delay', enq.length === 1 && Math.abs(enq[0].dueAt - (before + 9 * 86_400_000)) < 5_000);
+  }
+
+  // 22) subitem_not_checked condition: true when no matching subitem is at the label.
+  {
+    const SUBITEM_BOARD = 18403436575;
+    const rule: Rule[] = [
+      {
+        id: 'unsigned', enabled: true, boardId: BOARD, scope: { groupId: GROUP },
+        trigger: { type: 'item_entered_group' },
+        conditions: [{ type: 'subitem_not_checked', columnId: 'status', label: 'Done', subitemName: 'Treatment plan' }],
+        actions: [{ type: 'slack', when: { mode: 'immediate' }, text: 'not signed' }],
+      },
+    ];
+    const done = { status: { text: 'Done', value: null, type: 'color' } };
+    const notDone = { status: { text: 'Working on it', value: null, type: 'color' } };
+
+    const e1 = makeEngine(rule, makeItem({ subitems: [{ id: 1, boardId: SUBITEM_BOARD, name: 'Treatment plan', columns: notDone }] }));
+    const r1 = await e1.engine.handleEvent(entered(100));
+    check('subitem_not_checked fires when subitem not at label', r1.matched === 1 && e1.slacks.length === 1);
+
+    const e2 = makeEngine(rule, makeItem({ subitems: [{ id: 1, boardId: SUBITEM_BOARD, name: 'Treatment plan', columns: done }] }));
+    const r2 = await e2.engine.handleEvent(entered(100));
+    check('subitem_not_checked blocks when subitem at label', r2.matched === 0 && e2.slacks.length === 0);
+  }
+
+  // 23) shouldFireQueued: only timed rules with conditions re-check; others always fire.
+  {
+    const timedRule: Rule = {
+      id: 'timed-c', enabled: true, boardId: BOARD, scope: { groupId: GROUP },
+      trigger: { type: 'item_in_group_for_days', days: 7 },
+      conditions: [{ type: 'status_is_not', columnId: 'status', label: 'Done' }],
+      actions: [{ type: 'slack', when: { mode: 'immediate' }, text: 'nag' }],
+    };
+    const instantRule: Rule = {
+      id: 'instant-c', enabled: true, boardId: BOARD, scope: { groupId: GROUP },
+      trigger: { type: 'item_entered_group' },
+      conditions: [{ type: 'status_is_not', columnId: 'status', label: 'Done' }],
+      actions: [{ type: 'slack', when: { mode: 'relative', days: 1 }, text: 'later' }],
+    };
+    const mk = (statusText: string) =>
+      new RulesEngine({
+        rules: [timedRule, instantRule],
+        senders: { async sendEmail() {}, async sendSlack() {} },
+        hydrate: async () => makeItem({ columns: { status: { text: statusText, value: null, type: 'color' } } }),
+      });
+    check('timed re-check: condition holds → fire', (await mk('Working on it').shouldFireQueued('timed-c', 100)) === true);
+    check('timed re-check: condition fails → skip', (await mk('Done').shouldFireQueued('timed-c', 100)) === false);
+    check('non-timed rule is never gated at fire time', (await mk('Done').shouldFireQueued('instant-c', 100)) === true);
+    check('unknown rule id → fire', (await mk('Done').shouldFireQueued('nope', 100)) === true);
   }
 
   console.log(`\n${passed} checks passed.`);

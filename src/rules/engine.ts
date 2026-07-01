@@ -168,8 +168,17 @@ export class RulesEngine {
         log.info(`[rule ${rule.id}] clear_pending requires a store; skipped.`);
         return 'deferred';
       }
-      const n = this.store.cancelPendingForItem(item.id);
-      log.info(`[rule ${rule.id}] clear_pending cancelled ${n} action(s) for item ${item.id}.`);
+      let ruleIds: string[] | undefined;
+      if (action.scope === 'rules') {
+        ruleIds = action.ruleIds ?? [];
+        if (ruleIds.length === 0) {
+          log.warn(`[rule ${rule.id}] clear_pending scope=rules but no ruleIds; nothing cleared.`);
+          return 'cleared';
+        }
+      }
+      const n = this.store.cancelPendingForItem(item.id, ruleIds);
+      const target = ruleIds ? `rules [${ruleIds.join(', ')}]` : 'all rules';
+      log.info(`[rule ${rule.id}] clear_pending cancelled ${n} action(s) for item ${item.id} (${target}).`);
       return 'cleared';
     }
 
@@ -219,6 +228,29 @@ export class RulesEngine {
     } else {
       const p = payload as { webhookUrl: string; text: string };
       await this.senders.sendSlack(p);
+    }
+  }
+
+  /**
+   * Fire-time gate for a queued action (called by the worker before dispatch).
+   * Only `item_in_group_for_days` rules with conditions are re-evaluated: the item
+   * is re-hydrated and the rule's conditions re-checked, so a timed reminder
+   * self-cancels once the state that justified it changes (e.g. the plan is signed).
+   * Anything else — missing/non-timed rule, no conditions, un-hydratable item — fires
+   * (we never silently drop a send we can't disprove).
+   */
+  async shouldFireQueued(ruleId: string, itemId: number): Promise<boolean> {
+    const rule = this.rules.find((r) => r.id === ruleId);
+    if (!rule || rule.trigger.type !== 'item_in_group_for_days') return true;
+    const hasConditions = !!(rule.conditionGroups?.length || rule.conditions?.length);
+    if (!hasConditions) return true;
+    try {
+      const item = await this.hydrate(itemId);
+      if (!item) return true;
+      return conditionsPass(rule, item, {});
+    } catch (err) {
+      log.warn(`shouldFireQueued: could not re-check rule ${ruleId} for item ${itemId}; firing.`, err);
+      return true;
     }
   }
 
@@ -530,6 +562,8 @@ function conditionPass(c: Condition, item: ItemContext, ctx: ConditionContext): 
       return (item.columns[c.columnId]?.text ?? '') !== c.label;
     case 'column_equals':
       return (item.columns[c.columnId]?.text ?? '') === c.value;
+    case 'column_not_equals':
+      return (item.columns[c.columnId]?.text ?? '') !== c.value;
     case 'column_empty':
       return (item.columns[c.columnId]?.text ?? '') === '';
     case 'column_not_empty':
@@ -540,6 +574,12 @@ function conditionPass(c: Condition, item: ItemContext, ctx: ConditionContext): 
       return ctx.fromGroupId === c.groupId;
     case 'subitem_checked':
       return item.subitems.some((s) => {
+        if (c.subitemName && s.name.toLowerCase() !== c.subitemName.toLowerCase()) return false;
+        return (s.columns[c.columnId]?.text ?? '') === c.label;
+      });
+    case 'subitem_not_checked':
+      // True when NO matching subitem is at `label` (the negation of subitem_checked).
+      return !item.subitems.some((s) => {
         if (c.subitemName && s.name.toLowerCase() !== c.subitemName.toLowerCase()) return false;
         return (s.columns[c.columnId]?.text ?? '') === c.label;
       });

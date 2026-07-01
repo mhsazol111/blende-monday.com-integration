@@ -3,8 +3,8 @@ import { log } from '../util/logger.js';
 import type { ItemContext } from './hydrate.js';
 
 /**
- * Template-subitem cloner — TS port of the legacy WordPress plugin
- * (`monday-subitem-cloner.php`). When an item enters a group, it finds the
+ * Template-subitem cloner — TS port of the former WordPress plugin
+ * (`monday-subitem-cloner.php`, now retired). When an item enters a group, it finds the
  * template item in the Templates group whose name is contained in the group
  * title, and clones that template's subitems onto the item (once).
  *

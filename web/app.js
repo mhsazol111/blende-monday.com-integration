@@ -540,63 +540,138 @@ function renderTriggerParams(init) {
   }
 }
 
-// ── condition rows ───────────────────────────────────────────────────────────
-const CONDITIONS = [
-  { value: 'status_is', label: 'Status is' },
-  { value: 'status_is_not', label: 'Status is not' },
-  { value: 'column_equals', label: 'Column equals' },
-  { value: 'column_not_empty', label: 'Column is not empty' },
-  { value: 'column_empty', label: 'Column is empty' },
-  { value: 'in_group', label: 'Item is in group' },
-  { value: 'moved_from_group', label: 'Item moved from group' },
-  { value: 'subitem_checked', label: 'Subitem is' },
+// ── condition rows (Field → Operator → Value) ────────────────────────────────
+// The row is a query-builder: pick a subject (Item column / Subitem / Item's
+// group), an operator, and (for equality operators) a value. The value control
+// adapts — a label dropdown when the chosen column has labels (status/dropdown),
+// otherwise a text field. It serializes to the engine's existing condition types
+// (see src/rules/types.ts) and reverse-maps legacy types on edit, including the
+// retired-from-the-UI `status_is` / `status_is_not`.
+
+const CONDITION_SUBJECTS = [
+  { value: 'column', label: 'Item column' },
+  { value: 'subitem', label: 'Subitem' },
+  { value: 'group', label: "Item's group" },
+];
+const COLUMN_OPERATORS = [
+  { value: 'eq', label: 'is equal' },
+  { value: 'neq', label: 'is not equal' },
+  { value: 'not_empty', label: 'has any value' },
+  { value: 'empty', label: 'has no value' },
 ];
 
+// Saved condition object → {subject, operator, columnId, value, subitemName, groupId}.
+function decodeCondition(i) {
+  switch (i && i.type) {
+    case 'status_is': return { subject: 'column', operator: 'eq', columnId: i.columnId, value: i.label };
+    case 'status_is_not': return { subject: 'column', operator: 'neq', columnId: i.columnId, value: i.label };
+    case 'column_equals': return { subject: 'column', operator: 'eq', columnId: i.columnId, value: i.value };
+    case 'column_not_equals': return { subject: 'column', operator: 'neq', columnId: i.columnId, value: i.value };
+    case 'column_empty': return { subject: 'column', operator: 'empty', columnId: i.columnId };
+    case 'column_not_empty': return { subject: 'column', operator: 'not_empty', columnId: i.columnId };
+    case 'in_group': return { subject: 'group', operator: 'in', groupId: i.groupId };
+    case 'moved_from_group': return { subject: 'group', operator: 'from', groupId: i.groupId };
+    case 'subitem_checked':
+      return i.label === ''
+        ? { subject: 'subitem', operator: 'empty', columnId: i.columnId, subitemName: i.subitemName }
+        : { subject: 'subitem', operator: 'eq', columnId: i.columnId, value: i.label, subitemName: i.subitemName };
+    case 'subitem_not_checked':
+      return i.label === ''
+        ? { subject: 'subitem', operator: 'not_empty', columnId: i.columnId, subitemName: i.subitemName }
+        : { subject: 'subitem', operator: 'neq', columnId: i.columnId, value: i.label, subitemName: i.subitemName };
+    default: return { subject: 'column', operator: 'eq' };
+  }
+}
+
 function makeConditionRow(init, ownerRows) {
-  const typeSel = select(CONDITIONS.map((c) => ({ value: c.value, label: c.label })));
-  const params = el('div');
-  let serializeParams = () => ({});
-  let pending = init || null;
-  if (init && init.type) typeSel.value = init.type;
+  let dec = decodeCondition(init);
+  const subjectSel = select(CONDITION_SUBJECTS.map((s) => ({ value: s.value, label: s.label })));
+  subjectSel.value = dec.subject;
+  const body = el('div');
+  let serialize = () => ({ type: 'column_equals', columnId: '', value: '' });
+  // A labelled control cell — grouped so Field/Condition/Value sit as 3 columns.
+  const cell = (labelText, node) => el('div', {}, [el('label', { text: labelText }), node]);
+
+  // Item column / Subitem share the field → operator → value shape.
+  const renderColumnLike = (isSubitem) => {
+    const cols = isSubitem ? subCols() : boardCols();
+    const namePicker = isSubitem ? subitemNamePicker(dec.subitemName) : null;
+    const colCombo = combo([{ value: '', label: '— column —' }, ...colOptions(cols)], {
+      placeholder: '— column —',
+      value: dec.columnId || (isSubitem ? 'status' : ''),
+      onChange: () => { dec.value = getValue(); renderValue(); },
+    });
+    const opSel = select(COLUMN_OPERATORS.map((o) => ({ value: o.value, label: o.label })));
+    if (dec.operator) opSel.value = dec.operator;
+
+    const valWrap = el('div');
+    const valCell = cell('Value', valWrap);
+    let getValue = () => '';
+    const renderValue = () => {
+      valWrap.innerHTML = '';
+      getValue = () => '';
+      const noValue = opSel.value === 'empty' || opSel.value === 'not_empty';
+      valCell.style.display = noValue ? 'none' : ''; // drop the Value column entirely
+      if (noValue) return;
+      const c = cols.find((x) => x.id === colCombo.value);
+      if (c && c.labels && c.labels.length) {
+        const sel = select([{ value: '', label: '— label —' }, ...c.labels.map((l) => ({ value: l.label, label: l.label }))]);
+        if (dec.value) sel.value = dec.value;
+        valWrap.appendChild(sel);
+        getValue = () => sel.value;
+      } else {
+        const inp = el('input', { placeholder: 'value (matches column text)', value: dec.value || '' });
+        valWrap.appendChild(inp);
+        getValue = () => inp.value;
+      }
+    };
+    opSel.addEventListener('change', () => { const v = getValue(); if (v) dec.value = v; renderValue(); });
+    renderValue();
+
+    if (namePicker) body.append(cell('Subitem', namePicker.node));
+    body.append(el('div', { class: 'row' }, [cell('Field', colCombo.node), cell('Condition', opSel), valCell]));
+
+    serialize = () => {
+      const columnId = colCombo.value;
+      if (isSubitem) {
+        const nm = namePicker ? namePicker.serialize() : '';
+        const base = nm ? { columnId, subitemName: nm } : { columnId };
+        switch (opSel.value) {
+          case 'neq': return { type: 'subitem_not_checked', ...base, label: getValue() };
+          case 'empty': return { type: 'subitem_checked', ...base, label: '' };
+          case 'not_empty': return { type: 'subitem_not_checked', ...base, label: '' };
+          default: return { type: 'subitem_checked', ...base, label: getValue() };
+        }
+      }
+      switch (opSel.value) {
+        case 'neq': return { type: 'column_not_equals', columnId, value: getValue() };
+        case 'empty': return { type: 'column_empty', columnId };
+        case 'not_empty': return { type: 'column_not_empty', columnId };
+        default: return { type: 'column_equals', columnId, value: getValue() };
+      }
+    };
+  };
+
+  const renderGroup = () => {
+    const opSel = select([{ value: 'in', label: 'is in' }, { value: 'from', label: 'moved from' }]);
+    opSel.value = dec.operator === 'from' ? 'from' : 'in';
+    const g = combo([{ value: '', label: '— group —' }, ...groupOptions()], { placeholder: '— group —', value: dec.groupId || '' });
+    body.append(el('div', { class: 'row' }, [cell('Condition', opSel), cell('Group', g.node)]));
+    serialize = () => (opSel.value === 'from' ? { type: 'moved_from_group', groupId: g.value } : { type: 'in_group', groupId: g.value });
+  };
 
   const render = () => {
-    const t = typeSel.value;
-    const i = pending; pending = null;
-    params.innerHTML = '';
-    if (t === 'status_is' || t === 'status_is_not') {
-      const pair = columnLabelPair(byType(boardCols(), ['status', 'color']), i, { emptyLabel: '(no value / empty)' });
-      params.appendChild(pair.node);
-      serializeParams = pair.serialize;
-    } else if (t === 'column_equals') {
-      const col = combo([{ value: '', label: '— column —' }, ...colOptions(boardCols())], { placeholder: '— column —', value: i?.columnId || '' });
-      const val = el('input', { placeholder: 'value (matches column text)', value: i?.value || '' });
-      params.appendChild(el('div', { class: 'row' }, [col.node, val]));
-      serializeParams = () => ({ columnId: col.value, value: val.value });
-    } else if (t === 'column_empty' || t === 'column_not_empty') {
-      const col = combo([{ value: '', label: '— column —' }, ...colOptions(boardCols())], { placeholder: '— column —', value: i?.columnId || '' });
-      params.appendChild(col.node);
-      serializeParams = () => ({ columnId: col.value });
-    } else if (t === 'in_group' || t === 'moved_from_group') {
-      const g = combo([{ value: '', label: '— group —' }, ...groupOptions()], { placeholder: '— group —', value: i?.groupId || '' });
-      params.appendChild(g.node);
-      serializeParams = () => ({ groupId: g.value });
-    } else if (t === 'subitem_checked') {
-      const pair = columnLabelPair(byType(subCols(), ['status', 'color']), i, { emptyLabel: '(no value / empty)' });
-      const picker = subitemNamePicker(i?.subitemName);
-      params.append(el('label', { text: 'Subitem' }), picker.node, el('label', { text: 'Status → label (choose “(no value / empty)” to match an unset subitem)' }), pair.node);
-      serializeParams = () => {
-        const p = pair.serialize();
-        const nm = picker.serialize();
-        return nm ? { ...p, subitemName: nm } : p;
-      };
-    }
+    body.innerHTML = '';
+    if (subjectSel.value === 'group') renderGroup();
+    else renderColumnLike(subjectSel.value === 'subitem');
   };
-  typeSel.addEventListener('change', render);
+  // Switching subject resets stale field/value defaults from the loaded rule.
+  subjectSel.addEventListener('change', () => { dec = { subject: subjectSel.value, operator: 'eq' }; render(); });
   render();
 
   const remove = el('button', { class: 'danger', text: '✕', onclick: () => removeRow(ownerRows, row) });
-  const node = el('div', { class: 'subform' }, [el('div', { class: 'row' }, [typeSel, remove]), params]);
-  const row = { node, serialize: () => ({ type: typeSel.value, ...serializeParams() }) };
+  const node = el('div', { class: 'subform' }, [el('div', { class: 'row' }, [subjectSel, remove]), body]);
+  const row = { node, serialize: () => serialize() };
   return row;
 }
 
@@ -860,6 +935,42 @@ function makeActionRow(init) {
       const srcCol = combo([{ value: '', label: '— subitem source column —' }, ...colOptions(subCols())], { placeholder: '— subitem source column —', value: i?.templateSourceColumnId || '' });
       params.append(el('label', { text: 'Templates group title' }), grp, el('label', { text: 'Template-source column (subitem)' }), srcCol.node);
       serializeParams = () => ({ templatesGroupTitle: grp.value, templateSourceColumnId: srcCol.value });
+    } else if (t === 'clear_pending') {
+      const scope = select([
+        { value: 'all', label: 'All pending actions' },
+        { value: 'rules', label: 'Only specific rules' },
+      ]);
+      if (i?.scope) scope.value = i.scope;
+      const preset = new Set(i?.ruleIds || []);
+      const rulesWrap = el('div', { class: 'rule-picker' });
+      let boxes = [];
+      const renderRules = () => {
+        rulesWrap.innerHTML = '';
+        boxes = [];
+        if (scope.value !== 'rules') return;
+        const ids = state.ruleset.rules.map((r) => r.id);
+        if (!ids.length) {
+          rulesWrap.appendChild(el('span', { class: 'hint', text: 'No saved rules yet — save the target rule first, then edit this one.' }));
+          return;
+        }
+        ids.forEach((id) => {
+          const cb = el('input', { type: 'checkbox' });
+          if (preset.has(id)) cb.checked = true;
+          rulesWrap.appendChild(el('label', { class: 'check-row' }, [cb, el('span', { text: id })]));
+          boxes.push({ id, cb });
+        });
+      };
+      scope.addEventListener('change', renderRules);
+      params.append(
+        el('label', { text: 'Cancel' }), scope,
+        el('span', { class: 'hint', text: 'Cancels pending scheduled actions for this item — all, or only the chosen rules’ actions.' }),
+        rulesWrap,
+      );
+      renderRules();
+      serializeParams = () => {
+        if (scope.value !== 'rules') return {}; // legacy shape: { type: 'clear_pending' }
+        return { scope: 'rules', ruleIds: boxes.filter((b) => b.cb.checked).map((b) => b.id) };
+      };
     } else {
       params.appendChild(el('span', { class: 'hint', text: 'Cancels all pending scheduled actions for the item.' }));
       serializeParams = () => ({});

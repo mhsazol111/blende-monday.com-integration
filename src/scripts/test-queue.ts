@@ -242,6 +242,82 @@ async function main() {
     store.close();
   }
 
+  // J) fire-time re-check: a timed rule's condition is re-evaluated before sending.
+  {
+    const rules: Rule[] = [
+      {
+        id: 'timed-cond', enabled: true, boardId: BOARD, scope: { groupId: GROUP_A },
+        trigger: { type: 'item_in_group_for_days', days: 7 },
+        conditions: [{ type: 'status_is_not', columnId: 'status', label: 'Done' }],
+        actions: [{ type: 'slack', when: { mode: 'immediate' }, text: 'still not done' }],
+      },
+    ];
+    const mkHarness = (statusRef: { v: string }) => {
+      const store = new SqliteStore(':memory:');
+      const slacks: SlackMessage[] = [];
+      const senders: Senders = { async sendEmail() {}, async sendSlack(m) { slacks.push(m); } };
+      const hydrate = async (): Promise<ItemContext> => ({
+        ...item(GROUP_A),
+        columns: { status: { text: statusRef.v, value: null, type: 'color' } },
+      });
+      return { store, slacks, engine: new RulesEngine({ rules, store, senders, hydrate }) };
+    };
+
+    // J1: condition still holds at fire time → sends.
+    {
+      const st = { v: 'Working on it' };
+      const { store, engine, slacks } = mkHarness(st);
+      await engine.handleEvent(entered());
+      const r = await runDueActions(store, engine, now + 8 * DAY);
+      check('re-check fires when the condition still holds', r.sent === 1 && r.skipped === 0 && slacks.length === 1);
+      store.close();
+    }
+
+    // J2: condition fails by fire time → skipped + cancelled (never re-tried).
+    {
+      const st = { v: 'Working on it' };
+      const { store, engine, slacks } = mkHarness(st);
+      await engine.handleEvent(entered());
+      check('timed+condition armed at entry', store.dueActions(future).length === 1);
+      st.v = 'Done'; // patient "signed" → condition no longer holds
+      const r = await runDueActions(store, engine, now + 8 * DAY);
+      check('re-check skips when the condition no longer holds', r.sent === 0 && r.skipped === 1 && slacks.length === 0);
+      check('skipped action is cancelled, not left pending', store.dueActions(future).length === 0);
+      store.close();
+    }
+  }
+
+  // K) clear_pending scope='rules' cancels only the targeted rule's queued actions.
+  {
+    // K1: store-level scoped cancel.
+    const store = new SqliteStore(':memory:');
+    store.enqueue({ itemId: 100, ruleId: 'rule-x', actionType: 'slack', payload: { text: 'x' }, dueAt: future });
+    store.enqueue({ itemId: 100, ruleId: 'rule-y', actionType: 'slack', payload: { text: 'y' }, dueAt: future });
+    const n = store.cancelPendingForItem(100, ['rule-x']);
+    check('scoped cancel removes only the targeted rule row', n === 1 && store.dueActions(future).length === 1);
+    check("the surviving row is rule-y's", store.dueActions(future)[0].ruleId === 'rule-y');
+    store.close();
+
+    // K2: same, driven through a clear_pending action on a matched rule.
+    const store2 = new SqliteStore(':memory:');
+    store2.enqueue({ itemId: 100, ruleId: 'rule-x', actionType: 'slack', payload: { text: 'x' }, dueAt: future });
+    store2.enqueue({ itemId: 100, ruleId: 'rule-y', actionType: 'slack', payload: { text: 'y' }, dueAt: future });
+    const rules: Rule[] = [
+      {
+        id: 'canceller', enabled: true, boardId: BOARD, scope: { groupId: GROUP_A },
+        trigger: { type: 'item_entered_group' },
+        actions: [{ type: 'clear_pending', scope: 'rules', ruleIds: ['rule-x'] }],
+      },
+    ];
+    const senders: Senders = { async sendEmail() {}, async sendSlack() {} };
+    const engine = new RulesEngine({ rules, store: store2, senders, hydrate: async () => item(GROUP_A) });
+    const r = await engine.handleEvent(entered());
+    check('clear_pending scope=rules cancelled one action', r.cleared === 1);
+    const remaining = store2.dueActions(future);
+    check('only rule-y survives the scoped clear', remaining.length === 1 && remaining[0].ruleId === 'rule-y');
+    store2.close();
+  }
+
   console.log(`\n${passed} checks passed.`);
 }
 

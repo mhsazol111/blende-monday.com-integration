@@ -5,7 +5,7 @@ import type { NormalizedEvent } from '../events/types.js';
  *
  * monday payloads vary by event type and have historically used different
  * field names (pulseId vs itemId, etc.), so this reads defensively — mirroring
- * the variant-handling already present in the legacy PHP plugin.
+ * the variant-handling that was present in the former PHP plugin.
  */
 
 function num(v: unknown): number | undefined {

@@ -90,11 +90,25 @@ export class SqliteStore implements Store {
     }
   }
 
-  cancelPendingForItem(itemId: number): number {
+  cancelPendingForItem(itemId: number, ruleIds?: string[]): number {
+    if (ruleIds && ruleIds.length) {
+      const placeholders = ruleIds.map(() => '?').join(',');
+      const res = this.db
+        .prepare(
+          `UPDATE queued_actions SET status = 'cancelled' WHERE item_id = ? AND status = 'pending' AND rule_id IN (${placeholders})`,
+        )
+        .run(itemId, ...ruleIds);
+      return Number(res.changes ?? 0);
+    }
     const res = this.db
       .prepare(`UPDATE queued_actions SET status = 'cancelled' WHERE item_id = ? AND status = 'pending'`)
       .run(itemId);
     return Number(res.changes ?? 0);
+  }
+
+  /** Cancel a single pending action by id (used by the worker's fire-time gate). */
+  markCancelled(id: number): void {
+    this.db.prepare(`UPDATE queued_actions SET status = 'cancelled' WHERE id = ?`).run(id);
   }
 
   dueActions(now: number): QueuedActionRow[] {

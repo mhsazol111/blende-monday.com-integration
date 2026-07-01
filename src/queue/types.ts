@@ -36,7 +36,8 @@ export interface ItemEntry {
 /** What the rules engine needs from persistence. */
 export interface EngineStore {
   enqueue(entry: QueueEntry): void;
-  cancelPendingForItem(itemId: number): number;
+  /** Cancel pending actions for an item; scope to `ruleIds` when provided (else all). */
+  cancelPendingForItem(itemId: number, ruleIds?: string[]): number;
   getItemEntry(itemId: number): ItemEntry | null;
   recordItemEntry(itemId: number, boardId: number, groupId: string, enteredAt: number): void;
   clearItemEntry(itemId: number): void;
@@ -47,6 +48,8 @@ export interface Store extends EngineStore {
   dueActions(now: number): QueuedActionRow[];
   markSent(id: number, sentAt: number): void;
   markFailed(id: number): void;
+  /** Cancel a single pending action by id (fire-time re-check skip). */
+  markCancelled(id: number): void;
   /** Increment attempts and reschedule for a later retry (keeps status pending). */
   retryLater(id: number, nextDueAt: number): void;
   hasProcessedEvent(eventId: string): boolean;
