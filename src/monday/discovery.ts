@@ -146,11 +146,16 @@ const GROUP_SUBITEMS_QUERY = `
 
 /**
  * Distinct subitem names available in a group — the options for a
- * `subitem_checked` rule. Subitems differ per item, but within a group they
- * share names (cloned from the template), so rules match by name.
+ * `subitem_checked` rule.
  *
- * Primary source: the names actually present on items in the group. Fallback
- * (e.g. an empty group): the matching template item in the Templates group.
+ * Primary source: the matching template item in the Templates group, which
+ * holds one clean per-stage subitem set. This is authoritative because real
+ * items *accumulate* subitems from multiple workflow stages as they are cloned
+ * and moved, so scanning a group's actual items conflates stages (e.g. an item
+ * in "NP Intake" also carries "NP Consultation" subitems).
+ *
+ * Fallback (a group with no matching template, e.g. "Unscheduled Intake"): the
+ * distinct subitem names present on the group's real items.
  */
 export async function getGroupSubitemNames(
   boardId: string | number,
@@ -164,17 +169,22 @@ export async function getGroupSubitemNames(
   const target = groups.find((g) => g.id === groupId);
   if (!target) return [];
 
-  const collect = (group: any): string[] =>
-    (group?.items_page?.items ?? []).flatMap((i: any) => (i.subitems ?? []).map((s: any) => s.name));
+  const names = (item: any): string[] =>
+    [...new Set(((item?.subitems ?? []) as any[]).map((s) => s.name).filter(Boolean))].sort();
 
-  const fromGroup = [...new Set(collect(target).filter(Boolean))].sort();
-  if (fromGroup.length) return fromGroup;
-
-  // Fallback: template item whose name is contained in this group's title.
+  // Primary: the template item whose name is contained in this group's title.
+  // Prefer the longest matching name so a more specific stage wins if names overlap.
   const templates = groups.find((g) => String(g.title ?? '').toLowerCase() === templatesGroupTitle.toLowerCase());
   const title = String(target.title ?? '').toLowerCase();
-  const templateItem = (templates?.items_page?.items ?? []).find((it: any) =>
-    it.name && title.includes(String(it.name).toLowerCase()),
+  const templateItem = ((templates?.items_page?.items ?? []) as any[])
+    .filter((it) => it.name && title.includes(String(it.name).toLowerCase()))
+    .sort((a, b) => String(b.name).length - String(a.name).length)[0];
+  const fromTemplate = templateItem ? names(templateItem) : [];
+  if (fromTemplate.length) return fromTemplate;
+
+  // Fallback: the names actually present on items in the group.
+  const fromItems = (target?.items_page?.items ?? []).flatMap((i: any) =>
+    (i.subitems ?? []).map((s: any) => s.name),
   );
-  return [...new Set(((templateItem?.subitems ?? []) as any[]).map((s) => s.name).filter(Boolean))].sort();
+  return [...new Set((fromItems as string[]).filter(Boolean))].sort();
 }
