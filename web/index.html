@@ -41,7 +41,7 @@
       input:focus, select:focus, textarea:focus, .combo-input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(0,115,234,.12); }
       textarea { min-height: 320px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
 
-      button { cursor: pointer; border: 1px solid var(--bd-strong); background: #fff; border-radius: 8px; padding: 8px 14px; font: inherit; font-weight: 600; color: var(--text); transition: background .12s, border-color .12s; }
+      button { cursor: pointer; border: 1px solid var(--bd-strong); background: #fff; border-radius: 8px; padding: 8px 14px; font: inherit; font-weight: 600; color: var(--text); text-transform: capitalize; transition: background .12s, border-color .12s; }
       button:hover { background: #f3f4f8; }
       button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
       button.primary:hover { background: var(--accent-d); }
@@ -104,6 +104,11 @@
       /* condition groups (OR-of-ANDs) */
       .cond-group { border: 1px solid var(--bd); border-radius: 8px; padding: 8px 10px; background: #fafbfd; }
       .or-sep { text-align: center; font-weight: 700; font-size: 12px; color: var(--muted); margin: 6px 0; letter-spacing: .08em; }
+
+      /* queue filter bar */
+      .filterbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: flex-end; margin: 4px 0 14px; }
+      .filterbar > label { display: flex; flex-direction: column; gap: 3px; margin: 0; font-size: 11px; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); }
+      .filterbar select { width: auto; min-width: 130px; padding: 6px 8px; font-size: 13px; }
 
       /* queue items */
       .qitem { border: 1px solid var(--bd); border-radius: 8px; padding: 10px 12px; margin-bottom: 8px; }
@@ -214,6 +219,7 @@
             <button class="link" id="refreshQueue">↻ refresh</button>
           </h2>
           <p class="hint">Queued emails / Slack / monday writes (relative, absolute, or N-days). Run now, reschedule, or delete.</p>
+          <div id="queueFilters" class="filterbar"></div>
           <div id="queueList" class="scrolllist"></div>
         </div>
       </section>

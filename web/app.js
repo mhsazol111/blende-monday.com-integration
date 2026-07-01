@@ -349,6 +349,7 @@ function conditionalSnippets() {
 
 // ── state ────────────────────────────────────────────────────────────────────
 const state = { structure: null, boardId: null, ruleset: { rules: [] }, queue: [] };
+const queueFilter = { item: '', status: '', type: '', rule: '' };
 const conditionGroups = []; // OR-of-ANDs: each group has its own AND'd condition rows
 const actionRows = [];
 let scopeGroupCombo = null;
@@ -450,6 +451,19 @@ const TRIGGERS = [
   { value: 'all_subitems_checked', label: 'All of these subitems set (any order)' },
   { value: 'item_in_group_for_days', label: 'Item in group for N days' },
 ];
+
+// Short, clean kebab-case slugs used when generating a rule ID (nicer than the raw trigger value).
+const TRIGGER_SLUG = {
+  item_entered_group: 'entered-group',
+  item_left_group: 'left-group',
+  item_column_changed: 'column-changed',
+  subitem_checked: 'subitem-set',
+  all_subitems_checked: 'all-subitems-set',
+  item_in_group_for_days: 'in-group-days',
+};
+
+// value → human label, for the rule-list summary (falls back to the raw type for legacy triggers).
+const TRIGGER_LABEL = TRIGGERS.reduce((m, t) => { m[t.value] = t.label; return m; }, {});
 
 function multiSubitemPicker(initNames) {
   const rows = [];
@@ -1007,10 +1021,11 @@ function generateRuleId() {
   const title = state.structure?.board?.groups?.find((g) => g.id === groupId)?.title;
   const groupSlug = title ? slugify(title) : '';
   const existing = new Set(state.ruleset.rules.map((r) => r.id));
+  const trigSlug = TRIGGER_SLUG[type] || slugify(type);
   let id;
   do {
     const rand = Math.random().toString(36).slice(2, 7);
-    id = (groupSlug ? `${groupSlug}-` : '') + `${type}-${rand}`;
+    id = (groupSlug ? `${groupSlug}-` : '') + `${trigSlug}-${rand}`;
   } while (existing.has(id));
   return id;
 }
@@ -1057,10 +1072,18 @@ function renderRuleList() {
     list.appendChild(el('div', { class: 'empty' }, [el('span', { class: 'big', text: '📋' }), 'No rules yet — build one on the left.']));
     return;
   }
+  const groupTitle = (gid) =>
+    state.structure?.board?.groups?.find((g) => g.id === gid)?.title || gid || '(no group)';
   state.ruleset.rules.forEach((r, i) => {
+    const enabled = r.enabled !== false;
+    const trigLabel = TRIGGER_LABEL[r.trigger?.type] || r.trigger?.type || '(no trigger)';
+    const badge = el('span', {
+      class: 'badge ' + (enabled ? 'sent' : 'cancelled'),
+      text: enabled ? 'enabled' : 'disabled',
+    });
     const meta = el('div', {}, [
-      el('strong', { text: r.id }),
-      el('div', {}, [el('code', { text: `${r.trigger?.type} · ${r.scope?.groupId ?? ''} · ${(r.actions || []).length} action(s)` })]),
+      el('div', {}, [badge, el('strong', { text: ' ' + r.id })]),
+      el('div', {}, [el('span', { class: 'hint', text: `${trigLabel} · ${groupTitle(r.scope?.groupId)} · ${(r.actions || []).length} action(s)` })]),
     ]);
     const edit = el('button', { class: 'link', text: 'edit', onclick: () => loadRuleIntoBuilder(r) });
     const del = el('button', { class: 'danger', text: 'delete', onclick: () => deleteRule(i) });
@@ -1162,6 +1185,7 @@ async function loadBoard() {
     $('boardChip').textContent = b.name;
     const sb = state.structure.subitemBoard ? `, subitem board ${state.structure.subitemBoard.id}` : '';
     $('boardStatus').innerHTML = `<span class="ok">Loaded "${b.name}"</span> — ${b.groups.length} groups, ${b.columns.length} columns${sb}.`;
+    renderRuleList(); // re-render now that group titles are available for the rule summaries
     refreshWebhookStatus();
   } catch (err) {
     $('boardChip').className = 'board-chip';
@@ -1240,12 +1264,39 @@ async function loadQueue() {
   renderQueue();
 }
 
+/** A labelled <select>; keeps the current value if still available after a rebuild. */
+function filterSelect(labelText, opts, cur, onChange) {
+  const sel = select(opts);
+  sel.value = opts.some((o) => o.value === cur) ? cur : '';
+  sel.addEventListener('change', () => onChange(sel.value));
+  return el('label', { text: labelText }, [sel]);
+}
+
+function renderQueueFilters(all) {
+  const bar = $('queueFilters');
+  bar.innerHTML = '';
+  const distinct = (key) => [...new Set(all.map((a) => a[key]).filter((v) => v != null && v !== ''))].sort();
+  const opts = (vals, allLabel) => [{ value: '', label: allLabel }, ...vals.map((v) => ({ value: String(v), label: String(v) }))];
+  bar.appendChild(filterSelect('Item', opts(distinct('itemId'), 'All items'), queueFilter.item, (v) => { queueFilter.item = v; renderQueue(); }));
+  bar.appendChild(filterSelect('Status', opts(['pending', 'sent', 'cancelled', 'failed'], 'All statuses'), queueFilter.status, (v) => { queueFilter.status = v; renderQueue(); }));
+  bar.appendChild(filterSelect('Action', opts(['email', 'slack', 'set_column'], 'All actions'), queueFilter.type, (v) => { queueFilter.type = v; renderQueue(); }));
+  bar.appendChild(filterSelect('Rule', opts(distinct('ruleId'), 'All rules'), queueFilter.rule, (v) => { queueFilter.rule = v; renderQueue(); }));
+}
+
 function renderQueue() {
   const list = $('queueList');
   list.innerHTML = '';
-  const q = state.queue || [];
+  const all = state.queue || [];
+  renderQueueFilters(all);
+  const q = all.filter((a) =>
+    (!queueFilter.item || String(a.itemId) === queueFilter.item) &&
+    (!queueFilter.status || a.status === queueFilter.status) &&
+    (!queueFilter.type || a.actionType === queueFilter.type) &&
+    (!queueFilter.rule || a.ruleId === queueFilter.rule),
+  );
   $('queueCount').textContent = q.length;
-  if (!q.length) { list.appendChild(el('div', { class: 'empty' }, [el('span', { class: 'big', text: '🗓️' }), 'No scheduled actions yet.'])); return; }
+  if (!all.length) { list.appendChild(el('div', { class: 'empty' }, [el('span', { class: 'big', text: '🗓️' }), 'No scheduled actions yet.'])); return; }
+  if (!q.length) { list.appendChild(el('div', { class: 'empty' }, [el('span', { class: 'big', text: '🔍' }), 'No actions match these filters.'])); return; }
   q.forEach((a) => {
     const summary = a.actionType === 'email'
       ? `${(a.payload && a.payload.subject) || '(no subject)'} → ${((a.payload && a.payload.to) || []).join(', ')}`
