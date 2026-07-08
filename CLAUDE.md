@@ -337,10 +337,24 @@ the chosen column has labels, else a text field; hidden for the "has value" oper
 serializes cleanly; all legacy types still recognized, so saved rules are unaffected (editing a
 `status_is` rule re-saves it as `column_equals`). UI-only + 1 engine type; `test:engine` +2 (66→68).
 
-**All offline suites pass: `npm test` → 144 checks (ingress 10, engine 68, queue 32, polish 6,
+**All offline suites pass: `npm test` → 147 checks (ingress 10, engine 71, queue 32, polish 6,
 cutover 9, admin 7, exchange 12).** The former PHP plugin is **retired** — its cloning logic is fully
 ported to `src/monday/clone.ts` (exposed as the `clone_template_subitems` action), so nothing outside
 this service processes the board.
+
+**`post_update` action added (2026-07-08):** posts an item **Update** (monday `create_update`) instead
+of writing a column — the fix for the long_text **~2000-char cap** (monday enforces it; oversized
+writes are rejected). Modeled on `set_column`: item or named-subitem target, `when` scheduling,
+`{{templating}}`, and the same rich editor. Unlike `set_column` (which flattens HTML → plain text on a
+column write), `post_update` posts the **rich HTML body verbatim** — monday Updates render it and have
+no length cap, so it's the right home for a long email a human reads/copies off the item. Wiring:
+`postItemUpdate`/`UpdateWriter` (`src/monday/write.ts`, injectable on the engine like `columnWriter`),
+`PostUpdateAction` + `Action` union (`src/rules/types.ts`), `QueuedActionType` gains `post_update`
+(schedules through queue/worker), engine `renderAction`/`dispatch` + subitem-existence gate
+(`src/rules/engine.ts`), loader validation (`src/rules/loader.ts`), and a "Post an update" editor
+(`postUpdateControls`, `web/app.js`). Caveat: monday Updates render only a subset of HTML
+(bold/italic/lists/links/breaks) — complex tables/inline-CSS templates render plainer, but content is
+never truncated. `test:engine` +3 (68→71).
 
 **Configurator:** run `npm run dev` (or `npm start`) and open `http://localhost:<PORT>/`. If
 `WEBHOOK_SHARED_SECRET` is set, saving requires `?secret=<value>` on the URL.
@@ -434,7 +448,10 @@ timed reminder self-skips once its condition stops holding — no cancel rule re
   (so a delayed Slack + a status flip can fire together) and `{{templating}}` on the value. The
   free-text value is authored in the rich editor (supports `{{vars}}` + if/else) and HTML is
   flattened to **plain text** on write — used to stash a generated message in a column for manual reuse.
-- _Reserved for later:_ `post_update`, `create_subitems`.
+- `post_update` — post an item **Update** (monday `create_update`): item or a named subitem; rich HTML
+  body posted **verbatim** (not flattened) with no long_text ~2000-char cap; supports `when` scheduling
+  and `{{templating}}`. Use this (not `set_column`) to stash a long email a human reads/copies.
+- _Reserved for later:_ `create_subitems`.
 
 `when`: `immediate` | `relative` (`+N days/hours/minutes`) | `relative_from_column` (delay = an
 item/subitem column's number × a chosen unit, read at event time) | `absolute` (ISO timestamp).

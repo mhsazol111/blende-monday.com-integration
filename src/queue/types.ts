@@ -3,7 +3,7 @@
  * SQLite directly) so it stays testable with an in-memory/mock store.
  */
 
-export type QueuedActionType = 'email' | 'slack' | 'set_column';
+export type QueuedActionType = 'email' | 'slack' | 'set_column' | 'post_update';
 export type QueuedStatus = 'pending' | 'sent' | 'cancelled' | 'failed';
 
 export interface QueueEntry {

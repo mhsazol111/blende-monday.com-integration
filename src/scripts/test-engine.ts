@@ -345,6 +345,36 @@ async function main() {
     check('set_column skips when named subitem absent', writes.length === 0 && r.matched === 1);
   }
 
+  // 10b) post_update posts an item Update, HTML kept verbatim (unlike set_column), subitem-by-name guard.
+  {
+    const SUBITEM_BOARD = 18403436575;
+    const updates: any[] = [];
+    const mk = (rules: Rule[]) =>
+      new RulesEngine({
+        rules,
+        senders: { async sendEmail() {}, async sendSlack() {} },
+        updateWriter: async (a) => { updates.push(a); },
+        hydrate: async () => makeItem({ subitems: [{ id: 55, boardId: SUBITEM_BOARD, name: 'X-ray', columns: {} }] }),
+      });
+    const rule = (over: any): Rule => ({
+      id: 'r', enabled: true, boardId: BOARD, scope: { groupId: GROUP },
+      trigger: { type: 'item_entered_group' },
+      actions: [{ type: 'post_update', when: { mode: 'immediate' }, ...over }],
+    });
+
+    updates.length = 0;
+    await mk([rule({ body: '<p>Hi <strong>{{item.name}}</strong></p>' })]).handleEvent(entered(100));
+    check('post_update (item) posts to item id with HTML kept', updates.length === 1 && updates[0].itemId === 100 && updates[0].body === '<p>Hi <strong>NP Patient</strong></p>');
+
+    updates.length = 0;
+    await mk([rule({ target: 'subitem', subitemName: 'X-ray', body: 'note' })]).handleEvent(entered(100));
+    check('post_update (subitem) posts to subitem id', updates.length === 1 && updates[0].itemId === 55);
+
+    updates.length = 0;
+    const r = await mk([rule({ target: 'subitem', subitemName: 'Missing', body: 'note' })]).handleEvent(entered(100));
+    check('post_update skips when named subitem absent', updates.length === 0 && r.matched === 1);
+  }
+
   // 11) action isolation: a throwing action must not abort the rest of the rule.
   {
     const writes: any[] = [];

@@ -729,6 +729,7 @@ const ACTIONS = [
   { value: 'slack', label: 'Send Slack' },
   { value: 'email', label: 'Send email' },
   { value: 'set_column', label: 'Set a monday value (item/subitem)' },
+  { value: 'post_update', label: 'Post an update (item/subitem)' },
   { value: 'clear_pending', label: 'Clear pending actions' },
   { value: 'clone_template_subitems', label: 'Clone template subitems' },
 ];
@@ -789,6 +790,39 @@ function setColumnControls(init) {
   const node = el('div', {}, [el('label', { text: 'Target' }), target, subWrap, el('label', { text: 'Column' }), colWrap, el('label', { text: 'Value' }), valWrap]);
   const serialize = () => {
     const a = { columnId: colSel ? colSel.value : '', value: getValue() };
+    if (target.value === 'subitem') { a.target = 'subitem'; if (subPicker) a.subitemName = subPicker.serialize(); }
+    return a;
+  };
+  return { node, serialize };
+}
+
+function postUpdateControls(init) {
+  let initSubitem = init?.subitemName;
+  const target = select([{ value: 'item', label: 'Item' }, { value: 'subitem', label: 'Subitem' }]);
+  if (init?.target) target.value = init.target;
+
+  const subWrap = el('div');
+  let subPicker = null;
+  const renderSub = () => {
+    subWrap.innerHTML = '';
+    subPicker = null;
+    if (target.value === 'subitem') {
+      subPicker = subitemNamePicker(initSubitem);
+      subWrap.append(el('label', { text: 'Subitem (by name)' }), subPicker.node);
+      initSubitem = '';
+    }
+  };
+  target.addEventListener('change', renderSub);
+  renderSub();
+
+  // Rich body — posted as HTML to the item's Updates (no long_text char cap).
+  const editor = richEditor(init?.body, 'Update body — rich text, {{variables}}, if/else supported');
+  const node = el('div', {}, [
+    el('label', { text: 'Target' }), target, subWrap,
+    el('label', { text: 'Update (rich HTML — posted to the item’s Updates, no 2000-char limit)' }), editor.node,
+  ]);
+  const serialize = () => {
+    const a = { body: editor.getHtml() };
     if (target.value === 'subitem') { a.target = 'subitem'; if (subPicker) a.subitemName = subPicker.serialize(); }
     return a;
   };
@@ -944,6 +978,11 @@ function makeActionRow(init) {
       const sc = setColumnControls(i);
       params.append(when.node, sc.node);
       serializeParams = () => ({ when: when.serialize(), ...sc.serialize() });
+    } else if (t === 'post_update') {
+      const when = whenControl(i?.when);
+      const pu = postUpdateControls(i);
+      params.append(when.node, pu.node);
+      serializeParams = () => ({ when: when.serialize(), ...pu.serialize() });
     } else if (t === 'clone_template_subitems') {
       const grp = el('input', { value: i?.templatesGroupTitle || 'Templates', placeholder: 'Templates group title' });
       const srcCol = combo([{ value: '', label: '— subitem source column —' }, ...colOptions(subCols())], { placeholder: '— subitem source column —', value: i?.templateSourceColumnId || '' });

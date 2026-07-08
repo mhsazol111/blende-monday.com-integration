@@ -35,3 +35,35 @@ export const setColumnValue: ColumnWriter = async ({ boardId, itemId, columnId, 
     value,
   });
 };
+
+/**
+ * Post an item Update (the `post_update` action). Uses `create_update`, whose
+ * `body` accepts a subset of HTML for rich formatting and has NO ~2000-char
+ * long_text column cap — the right home for long content a human reads/copies.
+ * Works for both items and subitems (a subitem is just an item on the subitem
+ * board), so callers pass the resolved item/subitem id.
+ *
+ * Injectable (`UpdateWriter`) so the engine can be tested offline.
+ */
+
+export interface PostUpdateArgs {
+  itemId: number;
+  body: string;
+}
+
+export type UpdateWriter = (args: PostUpdateArgs) => Promise<void>;
+
+const UPDATE_MUTATION = `
+  mutation ($itemId: ID!, $body: String!) {
+    create_update(item_id: $itemId, body: $body) {
+      id
+    }
+  }
+`;
+
+export const postItemUpdate: UpdateWriter = async ({ itemId, body }) => {
+  await mondayGraphql(UPDATE_MUTATION, {
+    itemId: String(itemId),
+    body,
+  });
+};

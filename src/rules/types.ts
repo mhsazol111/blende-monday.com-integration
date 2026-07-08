@@ -123,12 +123,30 @@ export interface SetColumnAction {
   value: string;
 }
 
+/**
+ * Post an item Update (monday `create_update`). Unlike `set_column`, the body is
+ * posted as rich HTML (not flattened) and has no ~2000-char long_text cap — the
+ * right home for a long email a human reads/copies off the item. Targets the item
+ * or a named subitem; supports `{{templating}}` and `when` scheduling.
+ */
+export interface PostUpdateAction {
+  type: 'post_update';
+  when: ActionWhen;
+  /** 'item' (default) posts to the item; 'subitem' posts to a named subitem. */
+  target?: 'item' | 'subitem';
+  /** Required when target='subitem': the subitem to post on, matched by name. */
+  subitemName?: string;
+  /** Rich HTML body; supports `{{templating}}`. */
+  body: string;
+}
+
 export type Action =
   | EmailAction
   | SlackAction
   | ClearPendingAction
   | CloneTemplateSubitemsAction
-  | SetColumnAction;
+  | SetColumnAction
+  | PostUpdateAction;
 
 // ── Rule ────────────────────────────────────────────────────────────────────
 export interface RuleScope {

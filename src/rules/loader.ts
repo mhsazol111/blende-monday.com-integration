@@ -109,6 +109,9 @@ function validateAction(a: Rule['actions'][number]): string | null {
     if (!a.columnId) return 'set_column action missing columnId';
     if (!a.value?.trim()) return 'set_column action has empty value';
     if (a.target === 'subitem' && !a.subitemName?.trim()) return 'set_column on a subitem needs subitemName';
+  } else if (a.type === 'post_update') {
+    if (!a.body?.trim()) return 'post_update action has empty body';
+    if (a.target === 'subitem' && !a.subitemName?.trim()) return 'post_update on a subitem needs subitemName';
   } else if (a.type === 'clear_pending') {
     if (a.scope === 'rules' && (!Array.isArray(a.ruleIds) || a.ruleIds.length === 0)) {
       return 'clear_pending scope=rules needs a non-empty ruleIds list';

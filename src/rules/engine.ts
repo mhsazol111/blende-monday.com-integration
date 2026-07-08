@@ -5,7 +5,7 @@ import type { NormalizedEvent } from '../events/types.js';
 import { hydrateItem, type Hydrator, type ItemContext, type SubitemSnapshot } from '../monday/hydrate.js';
 import { defaultSenders, type Senders } from '../senders/index.js';
 import { cloneTemplateSubitems, type Cloner } from '../monday/clone.js';
-import { setColumnValue, type ColumnWriter } from '../monday/write.js';
+import { setColumnValue, postItemUpdate, type ColumnWriter, type UpdateWriter } from '../monday/write.js';
 import type { EngineStore, QueuedActionType } from '../queue/types.js';
 import type { Action, ActionWhen, Condition, Rule, Trigger } from './types.js';
 
@@ -32,6 +32,7 @@ export interface EngineDeps {
   store?: EngineStore;
   cloner?: Cloner;
   columnWriter?: ColumnWriter;
+  updateWriter?: UpdateWriter;
 }
 
 export interface HandleResult {
@@ -53,6 +54,7 @@ export class RulesEngine {
   private readonly store?: EngineStore;
   private readonly cloner: Cloner;
   private readonly columnWriter: ColumnWriter;
+  private readonly updateWriter: UpdateWriter;
 
   constructor(deps: EngineDeps) {
     this.rules = deps.rules;
@@ -61,6 +63,7 @@ export class RulesEngine {
     this.store = deps.store;
     this.cloner = deps.cloner ?? cloneTemplateSubitems;
     this.columnWriter = deps.columnWriter ?? setColumnValue;
+    this.updateWriter = deps.updateWriter ?? postItemUpdate;
   }
 
   /** Replace the active ruleset (used by the configurator after a save). */
@@ -192,11 +195,11 @@ export class RulesEngine {
       return res.action === 'created' ? 'executed' : 'skipped';
     }
 
-    // set_column targeting a subitem: make sure the named subitem exists before
-    // scheduling/sending, so we never enqueue an unwritable action.
-    if (action.type === 'set_column' && action.target === 'subitem') {
+    // set_column/post_update targeting a subitem: make sure the named subitem
+    // exists before scheduling/sending, so we never enqueue an unwritable action.
+    if ((action.type === 'set_column' || action.type === 'post_update') && action.target === 'subitem') {
       if (!findSubitemByName(item, action.subitemName)) {
-        log.warn(`[rule ${rule.id}] set_column: subitem "${action.subitemName}" not found on item ${item.id}; skipped.`);
+        log.warn(`[rule ${rule.id}] ${action.type}: subitem "${action.subitemName}" not found on item ${item.id}; skipped.`);
         return 'skipped';
       }
     }
@@ -225,6 +228,9 @@ export class RulesEngine {
     } else if (actionType === 'set_column') {
       const p = payload as { boardId: number; itemId: number; columnId: string; value: string };
       await this.columnWriter(p);
+    } else if (actionType === 'post_update') {
+      const p = payload as { itemId: number; body: string };
+      await this.updateWriter(p);
     } else {
       const p = payload as { webhookUrl: string; text: string };
       await this.senders.sendSlack(p);
@@ -377,6 +383,17 @@ function renderAction(
       return { actionType: 'set_column', payload: { boardId: sub.boardId, itemId: sub.id, columnId: action.columnId, value } };
     }
     return { actionType: 'set_column', payload: { boardId: item.boardId, itemId: item.id, columnId: action.columnId, value } };
+  }
+  if (action.type === 'post_update') {
+    // Post the rich HTML body verbatim — monday Updates render it and have no
+    // long_text char cap (that's the point). `{{subitem.*}}` works on any trigger.
+    const actx = withNamedSubitem(ctx, item, action.subitemName, action.type);
+    const body = renderTemplate(action.body, actx);
+    if (action.target === 'subitem') {
+      const sub = findSubitemByName(item, action.subitemName)!; // existence checked in runAction
+      return { actionType: 'post_update', payload: { itemId: sub.id, body } };
+    }
+    return { actionType: 'post_update', payload: { itemId: item.id, body } };
   }
   throw new Error(`renderAction called with non-sendable action: ${(action as Action).type}`);
 }
