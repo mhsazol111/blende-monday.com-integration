@@ -102,7 +102,8 @@ function validateAction(a: Rule['actions'][number]): string | null {
     if (!a.text?.trim()) return 'slack action has empty text';
   } else if (a.type === 'email') {
     if (!a.subject?.trim()) return 'email action has empty subject';
-    if ((!a.to || a.to.length === 0) && !a.toFromColumn) return 'email action has no recipients';
+    if ((!a.to || a.to.length === 0) && !a.toFromColumn && !a.toFromColumns?.length)
+      return 'email action has no recipients';
   } else if (a.type === 'clone_template_subitems') {
     if (!a.templateSourceColumnId) return 'clone action missing templateSourceColumnId';
   } else if (a.type === 'set_column') {

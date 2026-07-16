@@ -948,14 +948,28 @@ function makeActionRow(init) {
     } else if (t === 'email') {
       const when = whenControl(i?.when);
       const to = el('input', { placeholder: 'a@x.com, b@y.com', value: (i?.to || []).join(', ') });
-      const toCol = combo([{ value: '', label: '— none —' }, ...colOptions(byType(boardCols(), ['people']))], { placeholder: '— none —', value: i?.toFromColumn || '' });
+      // Recipients can come from any column holding an address; a people column
+      // resolves to the assigned person's account email. Legacy rules stored a
+      // single `toFromColumn` — show it ticked, re-save it as `toFromColumns`.
+      const preset = new Set(i?.toFromColumns ?? (i?.toFromColumn ? [i.toFromColumn] : []));
+      const colsWrap = el('div', { class: 'rule-picker' });
+      const toColBoxes = [];
+      colOptions(boardCols().filter((c) => ['people', 'email', 'text', 'long_text'].includes(c.type) || preset.has(c.id)))
+        .forEach((o) => {
+          const cb = el('input', { type: 'checkbox' });
+          if (preset.has(o.value)) cb.checked = true;
+          colsWrap.appendChild(el('label', { class: 'check-row' }, [cb, el('span', { text: o.label })]));
+          toColBoxes.push({ id: o.value, cb });
+        });
+      if (!toColBoxes.length) colsWrap.appendChild(el('span', { class: 'hint', text: 'No email/text/people columns on this board.' }));
       const subject = el('input', { placeholder: 'subject, e.g. {{item.name}} is Done', value: i?.subject || '' });
       const editor = richEditor(i?.body, 'Email body — rich text supported');
       const subPicker = state.structure?.subitemBoard ? subitemNamePicker(i?.subitemName) : null;
       params.append(
         when.node,
         el('label', { text: 'To (literal addresses)' }), to,
-        el('label', { text: 'To (from people column)' }), toCol.node,
+        el('label', { text: 'To (from columns)' }), colsWrap,
+        el('span', { class: 'hint', text: 'Tick any columns holding an address — email/text columns are read directly (comma- or semicolon-separated addresses supported); a people column resolves to the assigned person’s account email. All are merged with the literal list above and deduped.' }),
         el('label', { text: 'Subject' }), subject,
         el('label', { text: 'Body (rich HTML)' }), editor.node,
       );
@@ -968,7 +982,8 @@ function makeActionRow(init) {
         const a = { when: when.serialize(), subject: subject.value, body: editor.getHtml() };
         const list = to.value.split(',').map((s) => s.trim()).filter(Boolean);
         if (list.length) a.to = list;
-        if (toCol.value) a.toFromColumn = toCol.value;
+        const cols = toColBoxes.filter((b) => b.cb.checked).map((b) => b.id);
+        if (cols.length) a.toFromColumns = cols;
         const nm = subPicker ? subPicker.serialize() : '';
         if (nm) a.subitemName = nm;
         return a;

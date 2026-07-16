@@ -337,10 +337,9 @@ the chosen column has labels, else a text field; hidden for the "has value" oper
 serializes cleanly; all legacy types still recognized, so saved rules are unaffected (editing a
 `status_is` rule re-saves it as `column_equals`). UI-only + 1 engine type; `test:engine` +2 (66→68).
 
-**All offline suites pass: `npm test` → 147 checks (ingress 10, engine 71, queue 32, polish 6,
-cutover 9, admin 7, exchange 12).** The former PHP plugin is **retired** — its cloning logic is fully
-ported to `src/monday/clone.ts` (exposed as the `clone_template_subitems` action), so nothing outside
-this service processes the board.
+The former PHP plugin is **retired** — its cloning logic is fully ported to `src/monday/clone.ts`
+(exposed as the `clone_template_subitems` action), so nothing outside this service processes the
+board. (Suite counts are tracked at the end of this section.)
 
 **`post_update` action added (2026-07-08):** posts an item **Update** (monday `create_update`) instead
 of writing a column — the fix for the long_text **~2000-char cap** (monday enforces it; oversized
@@ -355,6 +354,32 @@ no length cap, so it's the right home for a long email a human reads/copies off 
 (`postUpdateControls`, `web/app.js`). Caveat: monday Updates render only a subset of HTML
 (bold/italic/lists/links/breaks) — complex tables/inline-CSS templates render plainer, but content is
 never truncated. `test:engine` +3 (68→71).
+
+**Email recipients from any column (2026-07-16):** the email action's only column-based recipient
+source was a **people** column ("To (from people column)"), but `person` is internal ownership here —
+its hydrated `.text` is a person's *name* ("Alyssa"), and the client's real addresses live in
+**Patient Email** (`email_mm5az59s`, type `email`) and **Referring Provider Email** (`text_mm2wm34h`,
+type `text`). `EmailAction` gained **`toFromColumns?: string[]`** (`src/rules/types.ts`) — multi-select,
+merged with the literal `to` and deduped; the old single `toFromColumn` is deprecated but still
+honored (11 live rules in `config/rules.json` use it). Engine: `mergeRecipients(action, item)` now
+takes the action and resolves each id via a new `emailsFromColumn` — the `people` map first (only the
+`users()` lookup can turn a person into an address), else the column's own data: **an email column's
+`value` JSON is parsed for its `email` key** (its `.text` may be a display label, not the address),
+else `.text` is split on commas/semicolons/whitespace and filtered by `EMAIL_RE`. That regex is also
+the safety net that stops a people column's name leaking in as a recipient. **No new monday API call** —
+`hydrateItem` already snapshots `{text, value, type}` for every column. Loader accepts the new key;
+UI (`web/app.js`) swaps the single people combo for a checkbox list (reusing the `clear_pending`
+`.rule-picker`/`.check-row` pattern) filtered to `people`/`email`/`text`/`long_text` **plus any saved
+id**, and migrates `toFromColumn` → `toFromColumns` on edit (same pattern as `status_changed_to` →
+`item_column_changed`). `test:polish` +6 (6→12). Verified live: the real patient item resolves its
+Patient Email column end-to-end.
+  - **Known gap (pre-existing, unchanged):** recipients are resolved at **event time** and baked into
+    the queued payload, so a *delayed* email reads the column when the rule fires, not when it sends.
+    If the address is filled in after the trigger, the queued send has no recipient and
+    `senders/index.ts` logs `[email] skipped — no recipients`.
+
+**All offline suites pass: `npm test` → 153 checks (ingress 10, engine 71, queue 32, polish 12,
+cutover 9, admin 7, exchange 12).**
 
 **Configurator:** run `npm run dev` (or `npm start`) and open `http://localhost:<PORT>/`. If
 `WEBHOOK_SHARED_SECRET` is set, saving requires `?secret=<value>` on the URL.
@@ -436,7 +461,7 @@ group. **For `item_in_group_for_days` (timed) rules, conditions are re-evaluated
 timed reminder self-skips once its condition stops holding — no cancel rule required.
 
 ### Actions
-- `email` — `to` (literal list) and/or `to_from_column` (people/email column), `subject`, `body` (rich HTML), `when`. Optional `subitemName` binds `{{subitem.*}}` to a named subitem (any trigger).
+- `email` — `to` (literal list) and/or `toFromColumns` (a list of column ids — see below), `subject`, `body` (rich HTML), `when`. Optional `subitemName` binds `{{subitem.*}}` to a named subitem (any trigger).
 - `slack` — `text` (rich HTML → mrkdwn), channel/webhook, `when`. Optional `subitemName` (same as email).
 - `clear_pending` — cancel pending scheduled actions for the item. `scope: 'all'` (default) cancels
   every pending action; `scope: 'rules'` with `ruleIds[]` cancels only those rules' actions (so
@@ -468,8 +493,9 @@ refer to that subitem; lets one message describe several subitems) — see `src/
 3. On **leave**, auto-clear the item's pending actions; on **re-entry** the counter resets.
 4. **Dedupe** true webhook resends (by event id). A genuine re-transition re-fires (Done→In
    Progress→Done fires twice); never re-fires while a value sits unchanged.
-5. **Recipients**: literal addresses and/or a configurable people column (e.g. assignee),
-   resolved to emails at send time.
+5. **Recipients**: literal addresses and/or any number of configurable columns (`toFromColumns`) —
+   email/text columns are read directly, a people column resolves via the `users()` lookup. Merged
+   and deduped. Resolved at **event time** (baked into the queued payload), not at send time.
 
 ---
 
@@ -505,8 +531,10 @@ _From `npm run discover` on 2026-06-11. Use these IDs when authoring rules / fix
   `Scheduled`=5.
 - **Subitem Status column:** id `status` — `Working on it`=0, `Done`=1, `Stuck`=2.
   ⚠️ **Subitems have no checkbox** — "subitem checked off" most likely means subitem Status → `Done`.
-- **People column:** `person` (parent) / `person` (subitem, titled "Owner") — recipient source for
-  `to_from_column`.
+- **People column:** `person` (parent) / `person` (subitem, titled "Owner") — internal ownership, NOT
+  a mailing list (its `.text` is a person's *name*). Selectable as a `toFromColumns` source, but the
+  client's real recipients live in **Patient Email** (`email_mm5az59s`, type `email`) and **Referring
+  Provider Email** (`text_mm2wm34h`, type `text`).
 - **Template-source column** (subitem): `text_mm1n5vbd` (used by the legacy cloner).
 - **Groups** (id → title): `group_mm2wbwep`→Unscheduled Intake, `topics`→Templates,
   `group_title`→NP Intake, `group_mm1nrj7r`→New HPSM, `group_mm1q43sd`→NP Consultation,
@@ -514,6 +542,8 @@ _From `npm run discover` on 2026-06-11. Use these IDs when authoring rules / fix
   groups. (Re-run `npm run discover` for the full current list.)
 - Other notable columns: `date4` (Date), `date_mm2wzc0w` (Last Contacted), `date_mm2w90et`
   (Next Action Date), `color_mm2wt4td` (Lead Status), `dropdown_mm2wc8hh` (Move To).
+- **Email-bearing columns** (recipient sources): `email_mm5az59s` (Patient Email, type `email` —
+  added 2026-07), `text_mm2wm34h` (Referring Provider Email, type `text`).
 
 > Note: the **Templates** group's id is `topics` (not a `group_xxx` slug) — don't assume group ids
 > follow one format.

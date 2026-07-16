@@ -7,7 +7,7 @@ import { defaultSenders, type Senders } from '../senders/index.js';
 import { cloneTemplateSubitems, type Cloner } from '../monday/clone.js';
 import { setColumnValue, postItemUpdate, type ColumnWriter, type UpdateWriter } from '../monday/write.js';
 import type { EngineStore, QueuedActionType } from '../queue/types.js';
-import type { Action, ActionWhen, Condition, Rule, Trigger } from './types.js';
+import type { Action, ActionWhen, Condition, EmailAction, Rule, Trigger } from './types.js';
 
 const DAY_MS = 86_400_000;
 const HOUR_MS = 3_600_000;
@@ -354,7 +354,7 @@ function renderAction(
     return {
       actionType: 'email',
       payload: {
-        to: mergeRecipients(action.to, action.toFromColumn, item),
+        to: mergeRecipients(action, item),
         subject: renderTemplate(action.subject, actx),
         body: htmlToText(rendered),
         ...(looksLikeHtml(rendered) ? { html: rendered } : {}),
@@ -423,15 +423,51 @@ function findSubitemByName(item: ItemContext, name?: string) {
   return item.subitems.find((s) => s.name.toLowerCase() === name.toLowerCase());
 }
 
-/** Combine literal recipients with those resolved from a people column. */
-function mergeRecipients(
-  to: string[] | undefined,
-  toFromColumn: string | undefined,
-  item: ItemContext,
-): string[] {
-  const literal = to ?? [];
-  const fromColumn = toFromColumn ? (item.people[toFromColumn] ?? []) : [];
-  return [...new Set([...literal, ...fromColumn])];
+/** Combine literal recipients with those resolved from the action's columns. */
+function mergeRecipients(action: EmailAction, item: ItemContext): string[] {
+  const ids = [...(action.toFromColumns ?? []), ...(action.toFromColumn ? [action.toFromColumn] : [])];
+  const fromColumns = ids.flatMap((id) => emailsFromColumn(id, item));
+  return [...new Set([...(action.to ?? []), ...fromColumns])];
+}
+
+/**
+ * Resolve one column id to email addresses. People columns come from the
+ * hydrated `people` map (their `.text` is a person's name, not an address);
+ * every other column is parsed from its value JSON, then its text.
+ */
+function emailsFromColumn(columnId: string, item: ItemContext): string[] {
+  const people = item.people[columnId];
+  if (people?.length) return people;
+  const col = item.columns[columnId];
+  if (!col) {
+    log.warn(`[email] recipient column "${columnId}" not found on item ${item.id}.`);
+    return [];
+  }
+  // An email column stores {"email":"a@b.com","text":"Display Label"} — the label
+  // may not be the address, so prefer the parsed `email` key over `.text`.
+  if (col.value) {
+    try {
+      const parsed = JSON.parse(col.value);
+      if (typeof parsed?.email === 'string') return extractEmails(parsed.email);
+    } catch {
+      /* not JSON — fall through to text */
+    }
+  }
+  const found = extractEmails(col.text);
+  if (!found.length && col.text.trim()) {
+    log.warn(`[email] column "${columnId}" value "${col.text}" has no valid address.`);
+  }
+  return found;
+}
+
+const EMAIL_RE = /^[^@\s,;]+@[^@\s,;]+\.[^@\s,;]+$/;
+
+/** Split free text on commas/semicolons/whitespace and keep what looks like an address. */
+function extractEmails(raw: string): string[] {
+  return String(raw ?? '')
+    .split(/[,;\s]+/)
+    .map((s) => s.trim())
+    .filter((s) => EMAIL_RE.test(s));
 }
 
 function bump(result: HandleResult, outcome: ActionOutcome) {

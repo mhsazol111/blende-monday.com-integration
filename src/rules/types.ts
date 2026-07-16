@@ -62,8 +62,14 @@ export interface EmailAction {
   type: 'email';
   when: ActionWhen;
   to?: string[];
-  /** People/email column id to resolve recipients from (Phase 5). */
+  /** @deprecated Legacy single-column source; use `toFromColumns`. Still honored. */
   toFromColumn?: string;
+  /**
+   * Column ids to resolve recipients from — people columns via the users()
+   * lookup, email/text columns parsed from their value/text. Merged with `to`,
+   * deduped.
+   */
+  toFromColumns?: string[];
   subject: string;
   body: string;
   /**
