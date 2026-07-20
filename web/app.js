@@ -946,6 +946,14 @@ function makeActionRow(init) {
         return a;
       };
     } else if (t === 'email') {
+      // Server-side contact-consent gate — applies to every email rule, so say so
+      // here rather than letting people re-implement it as a per-rule condition.
+      const optOutHint = () => {
+        const oo = state.config?.emailOptOut;
+        if (!oo) return 'Opt-out gate: not configured — every matching item will be emailed. Set EMAIL_OPTOUT_COLUMN_ID to enable it.';
+        const col = boardCols().find((c) => c.id === oo.columnId);
+        return `Opt-out gate is ACTIVE on “${col ? col.title : oo.columnId}”: any item whose value is “${oo.blockValue}” is skipped at send time (including already-scheduled emails). No condition needed on this rule.`;
+      };
       const when = whenControl(i?.when);
       const to = el('input', { placeholder: 'a@x.com, b@y.com', value: (i?.to || []).join(', ') });
       // Recipients can come from any column holding an address; a people column
@@ -970,6 +978,7 @@ function makeActionRow(init) {
         el('label', { text: 'To (literal addresses)' }), to,
         el('label', { text: 'To (from columns)' }), colsWrap,
         el('span', { class: 'hint', text: 'Tick any columns holding an address — email/text columns are read directly (comma- or semicolon-separated addresses supported); a people column resolves to the assigned person’s account email. All are merged with the literal list above and deduped.' }),
+        el('span', { class: 'hint', text: optOutHint() }),
         el('label', { text: 'Subject' }), subject,
         el('label', { text: 'Body (rich HTML)' }), editor.node,
       );
@@ -1416,6 +1425,7 @@ function init() {
   renderConditionGroups();
   loadRules();
   fetch('/api/config').then((r) => r.json()).then((cfg) => {
+    state.config = cfg;
     if (cfg.defaultBoardId) { $('boardId').value = cfg.defaultBoardId; loadBoard(); }
     else { $('boardChip').className = 'board-chip'; $('boardChip').textContent = 'no board set'; }
   }).catch(() => {});

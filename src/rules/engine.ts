@@ -1,3 +1,4 @@
+import { env } from '../config/env.js';
 import { log } from '../util/logger.js';
 import { renderTemplate } from '../util/template.js';
 import { htmlToText, htmlToSlack, looksLikeHtml } from '../util/html.js';
@@ -33,6 +34,16 @@ export interface EngineDeps {
   cloner?: Cloner;
   columnWriter?: ColumnWriter;
   updateWriter?: UpdateWriter;
+  /** Patient contact-consent gate. Defaults to the EMAIL_OPTOUT_* env vars;
+   *  injectable so tests can configure it (env is read at module load). */
+  emailOptOut?: EmailOptOutConfig;
+}
+
+export interface EmailOptOutConfig {
+  /** Board column holding the flag. Empty string disables the gate. */
+  columnId: string;
+  /** The one value that suppresses email (compared trimmed + case-insensitively). */
+  blockValue: string;
 }
 
 export interface HandleResult {
@@ -47,6 +58,13 @@ export interface HandleResult {
 
 type ActionOutcome = 'executed' | 'scheduled' | 'cleared' | 'deferred' | 'skipped';
 
+/** Which item a dispatched payload belongs to (drives the email opt-out gate). */
+export interface DispatchContext {
+  itemId?: number;
+  /** Already-hydrated context, when the caller has one (avoids a monday round-trip). */
+  item?: ItemContext;
+}
+
 export class RulesEngine {
   private rules: Rule[];
   private readonly hydrate: Hydrator;
@@ -55,6 +73,7 @@ export class RulesEngine {
   private readonly cloner: Cloner;
   private readonly columnWriter: ColumnWriter;
   private readonly updateWriter: UpdateWriter;
+  private readonly emailOptOut: EmailOptOutConfig;
 
   constructor(deps: EngineDeps) {
     this.rules = deps.rules;
@@ -64,6 +83,10 @@ export class RulesEngine {
     this.cloner = deps.cloner ?? cloneTemplateSubitems;
     this.columnWriter = deps.columnWriter ?? setColumnValue;
     this.updateWriter = deps.updateWriter ?? postItemUpdate;
+    this.emailOptOut = deps.emailOptOut ?? {
+      columnId: env.emailOptOutColumnId,
+      blockValue: env.emailOptOutBlockValue,
+    };
   }
 
   /** Replace the active ruleset (used by the configurator after a save). */
@@ -216,14 +239,65 @@ export class RulesEngine {
       return 'scheduled';
     }
 
-    await this.dispatch(action.type, renderAction(action, ctx, item).payload);
+    await this.dispatch(action.type, renderAction(action, ctx, item).payload, { item });
     return 'executed';
   }
 
-  /** Send a rendered payload now (also used by the worker for due actions). */
-  async dispatch(actionType: QueuedActionType, payload: unknown): Promise<void> {
+  /**
+   * Global patient contact-consent gate.
+   *
+   * Returns 'allow' | 'block'; THROWS if the flag can't be read (fail closed) so the
+   * caller's retry/error handling sees it rather than silently mailing an item whose
+   * consent state is unknown. An absent or empty column value means allowed — the
+   * board manager only ever has to mark the exceptions.
+   */
+  private async emailOptOutState(ctx?: DispatchContext): Promise<'allow' | 'block'> {
+    const { columnId, blockValue } = this.emailOptOut;
+    if (!columnId) return 'allow'; // gate not configured
+
+    let item = ctx?.item;
+    if (!item) {
+      if (ctx?.itemId === undefined) {
+        throw new Error(
+          `Email opt-out gate: no item context for this send (column "${columnId}" configured); refusing to send.`,
+        );
+      }
+      const hydrated = await this.hydrate(ctx.itemId); // may throw — intentionally propagates
+      if (!hydrated) {
+        throw new Error(`Email opt-out gate: could not hydrate item ${ctx.itemId}; refusing to send.`);
+      }
+      item = hydrated;
+    }
+
+    const col = item.columns[columnId];
+    if (col === undefined) {
+      // Misconfigured id (typo/deleted column) — allow, but say so loudly. The
+      // alternative silently blocks ALL mail, which is far harder to notice.
+      log.warn(
+        `Email opt-out gate: column "${columnId}" not found on item ${item.id}; ` +
+          `treating as allowed. Check EMAIL_OPTOUT_COLUMN_ID.`,
+      );
+      return 'allow';
+    }
+
+    const value = (col.text ?? '').trim().toLowerCase();
+    return value === blockValue.trim().toLowerCase() ? 'block' : 'allow';
+  }
+
+  /**
+   * Send a rendered payload now (also used by the worker for due actions and by the
+   * configurator's "run now"). `ctx` carries the item this payload belongs to so the
+   * email opt-out gate can read its live consent flag at send time; pass the already
+   * hydrated `item` when you have one to avoid a redundant monday call.
+   */
+  async dispatch(actionType: QueuedActionType, payload: unknown, ctx?: DispatchContext): Promise<void> {
     if (actionType === 'email') {
       const p = payload as { to: string[]; subject: string; body: string; html?: string };
+      if ((await this.emailOptOutState(ctx)) === 'block') {
+        const who = ctx?.item?.id ?? ctx?.itemId;
+        log.warn(`[email] suppressed — item ${who} is opted out of email (subject="${p.subject}").`);
+        return;
+      }
       await this.senders.sendEmail(p);
     } else if (actionType === 'set_column') {
       const p = payload as { boardId: number; itemId: number; columnId: string; value: string };

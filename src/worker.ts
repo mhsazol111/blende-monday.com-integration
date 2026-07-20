@@ -38,7 +38,7 @@ export async function runDueActions(
         skipped++;
         continue;
       }
-      await engine.dispatch(row.actionType, row.payload);
+      await engine.dispatch(row.actionType, row.payload, { itemId: row.itemId });
       store.markSent(row.id, Date.now());
       sent++;
     } catch (err) {

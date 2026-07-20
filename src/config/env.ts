@@ -65,6 +65,14 @@ export const env = {
   smtpFromName: optional('SMTP_FROM_NAME', 'Monday Automation'),
   smtpFromEmail: optional('SMTP_FROM_EMAIL', 'no-reply@example.com'),
 
+  // email — patient contact-consent gate. When `emailOptOutColumnId` names a board
+  // column, every outgoing email (immediate, queued and admin "run now") is checked
+  // against that column's live value at send time; an item whose value equals
+  // `emailOptOutBlockValue` is suppressed. Empty column id disables the gate
+  // entirely; an empty/absent column value means allowed (default-yes).
+  emailOptOutColumnId: optional('EMAIL_OPTOUT_COLUMN_ID'),
+  emailOptOutBlockValue: optional('EMAIL_OPTOUT_BLOCK_VALUE', 'No'),
+
   // email — Microsoft Graph (Exchange Online) transport, OAuth2 client-credentials
   msGraphTenantId: optional('MS_GRAPH_TENANT_ID'),
   msGraphClientId: optional('MS_GRAPH_CLIENT_ID'),

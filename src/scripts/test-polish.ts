@@ -148,6 +148,109 @@ async function main() {
     store.close();
   }
 
+  // 3) email opt-out gate (patient contact consent).
+  {
+    const OPTOUT = 'color_optout';
+    const itemWithFlag = (text: string | null): ItemContext => ({
+      ...itemWithPeople,
+      columns: {
+        ...itemWithPeople.columns,
+        ...(text === null ? {} : { [OPTOUT]: { text, value: null, type: 'color' } }),
+      },
+    });
+
+    const emailRule: Rule = {
+      id: 'optout-email',
+      enabled: true,
+      boardId: BOARD,
+      scope: { groupId: GROUP },
+      trigger: { type: 'item_entered_group' },
+      actions: [{ type: 'email', when: { mode: 'immediate' }, to: ['p@example.com'], subject: 's', body: 'b' }],
+    };
+
+    /** Fire the immediate email rule and report how many mails went out. */
+    const sentWith = async (
+      flag: string | null,
+      optOut: { columnId: string; blockValue: string } | undefined = { columnId: OPTOUT, blockValue: 'No' },
+    ): Promise<number> => {
+      const emails: EmailMessage[] = [];
+      const senders: Senders = { async sendEmail(m) { emails.push(m); }, async sendSlack() {} };
+      const engine = new RulesEngine({
+        rules: [emailRule],
+        senders,
+        hydrate: async () => itemWithFlag(flag),
+        emailOptOut: optOut,
+      });
+      await engine.handleEvent(entered);
+      return emails.length;
+    };
+
+    check('gate off (no column configured) → sends', (await sentWith('No', { columnId: '', blockValue: 'No' })) === 1);
+    check('flag "No" → suppressed', (await sentWith('No')) === 0);
+    check('flag "Yes" → sends', (await sentWith('Yes')) === 1);
+    check('flag empty → sends (default-allow)', (await sentWith('')) === 1);
+    check('column absent → sends (default-allow)', (await sentWith(null)) === 1);
+    check('flag " no " (case + whitespace) → suppressed', (await sentWith(' no ')) === 0);
+
+    // Slack is internal staff notification, not patient contact — never gated.
+    {
+      let slacks = 0;
+      const senders: Senders = { async sendEmail() {}, async sendSlack() { slacks++; } };
+      const engine = new RulesEngine({
+        rules: [{ ...emailRule, id: 'optout-slack', actions: [{ type: 'slack', when: { mode: 'immediate' }, text: 'hi' }] }],
+        senders,
+        hydrate: async () => itemWithFlag('No'),
+        emailOptOut: { columnId: OPTOUT, blockValue: 'No' },
+      });
+      await engine.handleEvent(entered);
+      check('slack unaffected by an opted-out item', slacks === 1);
+    }
+
+    // The case a per-rule condition could not cover: a queued email is gated at
+    // SEND time, so flipping the flag after it was armed still suppresses it.
+    {
+      const store = new SqliteStore(':memory:');
+      const emails: EmailMessage[] = [];
+      const senders: Senders = { async sendEmail(m) { emails.push(m); }, async sendSlack() {} };
+      const engine = new RulesEngine({
+        rules: [],
+        senders,
+        store,
+        hydrate: async () => itemWithFlag('No'),
+        emailOptOut: { columnId: OPTOUT, blockValue: 'No' },
+      });
+      const now = Date.now();
+      store.enqueue({ itemId: 100, ruleId: 'r', actionType: 'email', payload: { to: ['p@example.com'], subject: 's', body: 'b' }, dueAt: now });
+
+      const res = await runDueActions(store, engine, now);
+      check('queued email for an opted-out item is suppressed at send time', emails.length === 0);
+      check('suppressed queued email is marked sent, not failed', res.sent === 1 && res.failed === 0);
+      store.close();
+    }
+
+    // Unreadable flag → fail closed: throw, so the worker retries rather than
+    // mailing an item whose consent state is unknown.
+    {
+      const store = new SqliteStore(':memory:');
+      const emails: EmailMessage[] = [];
+      const senders: Senders = { async sendEmail(m) { emails.push(m); }, async sendSlack() {} };
+      const engine = new RulesEngine({
+        rules: [],
+        senders,
+        store,
+        hydrate: async () => { throw new Error('monday down'); },
+        emailOptOut: { columnId: OPTOUT, blockValue: 'No' },
+      });
+      const now = Date.now();
+      store.enqueue({ itemId: 100, ruleId: 'r', actionType: 'email', payload: { to: ['p@example.com'], subject: 's', body: 'b' }, dueAt: now });
+
+      const res = await runDueActions(store, engine, now, { maxAttempts: 2, retryBackoffMs: 1000 });
+      check('unreadable flag → no email sent (fail closed)', emails.length === 0);
+      check('unreadable flag → retried, not marked sent', res.retried === 1 && res.sent === 0);
+      store.close();
+    }
+  }
+
   console.log(`\n${passed} checks passed.`);
 }
 

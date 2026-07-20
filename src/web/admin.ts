@@ -68,6 +68,9 @@ export function registerAdmin(app: FastifyInstance, engine?: RulesEngine, store?
   app.get('/api/config', async () => ({
     defaultBoardId: env.mondayBoardId || null,
     secretRequired: !!env.webhookSharedSecret,
+    emailOptOut: env.emailOptOutColumnId
+      ? { columnId: env.emailOptOutColumnId, blockValue: env.emailOptOutBlockValue }
+      : null,
   }));
 
   app.get('/api/discover', async (request, reply) => {
@@ -191,7 +194,7 @@ export function registerAdmin(app: FastifyInstance, engine?: RulesEngine, store?
     const action = store.getAction(id);
     if (!action) return reply.code(404).send({ error: 'action not found' });
     try {
-      await engine.dispatch(action.actionType, action.payload);
+      await engine.dispatch(action.actionType, action.payload, { itemId: action.itemId });
       store.markSent(id, Date.now());
       log.info(`Queue: ran action ${id} (${action.actionType}) now.`);
       return { ok: true };

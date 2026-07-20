@@ -378,7 +378,38 @@ Patient Email column end-to-end.
     If the address is filled in after the trigger, the queued send has no recipient and
     `senders/index.ts` logs `[email] skipped — no recipients`.
 
-**All offline suites pass: `npm test` → 153 checks (ingress 10, engine 71, queue 32, polish 12,
+**Email opt-out gate (2026-07-20):** patients who don't want email contact are now suppressed
+service-wide by a **global gate at send time**, not a per-rule condition. `EMAIL_OPTOUT_COLUMN_ID`
+names a board column (a Status column with `Yes`/`No` labels — id from `npm run discover`) and
+`EMAIL_OPTOUT_BLOCK_VALUE` (default `No`) the one value that blocks; an empty column id disables the
+feature entirely. `RulesEngine.dispatch` is the single path for immediate, queued **and** admin
+"run now" sends, so the check lives in its `email` branch (`emailOptOutState`, `src/rules/engine.ts`)
+and covers all three. Config is injectable via `EngineDeps.emailOptOut` (env is read at module load,
+so tests couldn't otherwise set it). `dispatch` gained a third arg `ctx?: DispatchContext`
+(`{ itemId?, item? }`) rather than baking an itemId into the email payload — **queue rows written
+before this deploy keep working**; the immediate path passes the already-hydrated `item` (no extra
+monday call), the worker and admin pass `itemId`.
+  - **Why not a rule condition** (the original ask): (a) conditions compare `.text` with strict `===`
+    and a missing/empty column reads `''` (`engine.ts:617`), so `email_allowed is equal "Yes"` would
+    block mail on every untouched item — "default yes" inverts; (b) a condition is opt-in per rule
+    and `shouldFireQueued` only re-checks `item_in_group_for_days` rules, so a `relative` "+48h"
+    email already queued would still fire after the flag flips to No. The gate reads the **live**
+    value at send time, so that case is covered.
+  - **Semantics:** empty/untouched column ⇒ allowed (the manager only marks exceptions); comparison
+    is trimmed + case-insensitive (unlike conditions elsewhere — a safety gate must not be defeated
+    by `"no "`). A **missing column** (typo'd `EMAIL_OPTOUT_COLUMN_ID`) ⇒ allowed + loud warn, since
+    the alternative silently blocks all mail. **Unreadable flag** (hydrate throws/null, or no item
+    context) ⇒ **throws** → the worker's existing retry/backoff retries 3× then marks `failed`, so a
+    transient monday blip recovers and a persistent one is visible. An explicit opt-out returns
+    silently (+warn) and is marked `sent` — retrying can't change the answer.
+  - **Scope: email only.** Slack is internal staff notification, not patient contact.
+  - UI: `GET /api/config` returns `emailOptOut`, and the email action editor shows a hint stating
+    whether the gate is active and on which column — so nobody re-implements it as a condition.
+  - **Unchanged pre-existing gap:** recipient *addresses* are still resolved at arm time and frozen
+    into the queued payload (`engine.ts:356`). The gate fixes the consent half; a delayed email whose
+    address column changes after arming still uses the old address.
+
+**All offline suites pass: `npm test` → 164 checks (ingress 10, engine 71, queue 32, polish 23,
 cutover 9, admin 7, exchange 12).**
 
 **Configurator:** run `npm run dev` (or `npm start`) and open `http://localhost:<PORT>/`. If
@@ -496,6 +527,9 @@ refer to that subitem; lets one message describe several subitems) — see `src/
 5. **Recipients**: literal addresses and/or any number of configurable columns (`toFromColumns`) —
    email/text columns are read directly, a people column resolves via the `users()` lookup. Merged
    and deduped. Resolved at **event time** (baked into the queued payload), not at send time.
+6. **Contact consent**: a board-wide opt-out column (`EMAIL_OPTOUT_COLUMN_ID`) suppresses email for
+   an item at **send time**, ahead of every email action — immediate, scheduled and admin "run now".
+   Empty/untouched ⇒ allowed. Rules need no condition for this. Slack is not gated.
 
 ---
 
@@ -544,6 +578,10 @@ _From `npm run discover` on 2026-06-11. Use these IDs when authoring rules / fix
   (Next Action Date), `color_mm2wt4td` (Lead Status), `dropdown_mm2wc8hh` (Move To).
 - **Email-bearing columns** (recipient sources): `email_mm5az59s` (Patient Email, type `email` —
   added 2026-07), `text_mm2wm34h` (Referring Provider Email, type `text`).
+- **Email opt-out column:** `color_mm5e9gs2` ("Email Allowed", type `status`) — created 2026-07-20.
+  Labels: `Yes`=1 (green), `No`=2 (red); **every existing item was left empty**, which the gate reads
+  as allowed. Set `EMAIL_OPTOUT_COLUMN_ID=color_mm5e9gs2` to activate. Verified live: the column
+  hydrates as `{text:"", value:null, type:"status"}` on untouched items → email allowed.
 
 > Note: the **Templates** group's id is `topics` (not a `group_xxx` slug) — don't assume group ids
 > follow one format.
@@ -672,6 +710,8 @@ webhook ingress, and runs the scheduler in-process.
    | `SLACK_WEBHOOK_URL` | the incoming-webhook URL |
    | `WEBHOOK_SHARED_SECRET` | a random string (required — it's public now) |
    | `SMTP_*` | only if you want live email (else dry-run) |
+   | `EMAIL_OPTOUT_COLUMN_ID` | `color_mm5e9gs2` (the "Email Allowed" column; blank = gate disabled) |
+   | `EMAIL_OPTOUT_BLOCK_VALUE` | `No` (default) — the value that suppresses email |
    | `PORT` | `3000` (matches the Dockerfile/EXPOSE) |
    `DATABASE_PATH` and `RULES_PATH` are already set to `/app/data/...` in the Dockerfile.
 3. **Persistent volume:** mount one at **`/app/data`** (rules + queue survive redeploys). Without
