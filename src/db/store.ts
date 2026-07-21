@@ -61,6 +61,18 @@ export class SqliteStore implements Store {
         processed_at INTEGER NOT NULL
       );
     `);
+
+    // Added after the initial schema shipped, so existing databases need an
+    // ALTER. `CREATE TABLE IF NOT EXISTS` above is a no-op on those.
+    this.addColumnIfMissing('queued_actions', 'status_reason', 'TEXT');
+  }
+
+  /** Idempotent `ALTER TABLE … ADD COLUMN` (SQLite has no `IF NOT EXISTS` for it). */
+  private addColumnIfMissing(table: string, column: string, decl: string): void {
+    const cols = this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+    if (cols.some((c) => c.name === column)) return;
+    this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${decl}`);
+    log.info(`DB migration: added ${table}.${column}.`);
   }
 
   // ── queue ────────────────────────────────────────────────────────────────
@@ -120,6 +132,12 @@ export class SqliteStore implements Store {
 
   markSent(id: number, sentAt: number): void {
     this.db.prepare(`UPDATE queued_actions SET status = 'sent', sent_at = ? WHERE id = ?`).run(sentAt, id);
+  }
+
+  markSuppressed(id: number, at: number, reason: string): void {
+    this.db
+      .prepare(`UPDATE queued_actions SET status = 'suppressed', sent_at = ?, status_reason = ? WHERE id = ?`)
+      .run(at, reason, id);
   }
 
   markFailed(id: number): void {
@@ -207,6 +225,7 @@ function rowToQueuedAction(row: any): QueuedActionRow {
     payload: JSON.parse(row.payload_json),
     dueAt: Number(row.due_at),
     status: String(row.status) as QueuedStatus,
+    statusReason: row.status_reason ?? undefined,
     attempts: Number(row.attempts ?? 0),
     dedupeKey: row.dedupe_key ?? undefined,
     createdAt: Number(row.created_at),

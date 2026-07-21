@@ -288,9 +288,11 @@ function richEditor(initialHtml, placeholder) {
       editor.innerHTML += text;
     }
   };
+  // Chips are labelled by column title (an id is unreadable); the token they
+  // insert is unchanged, and the tooltip shows it so the id stays discoverable.
   const chips = el('div', { class: 'chips' },
     availableVariables().map((v) =>
-      el('span', { class: 'chip', title: v.hint || '', text: v.token,
+      el('span', { class: 'chip', title: v.hint || v.token, text: v.label || v.token,
         onmousedown: (e) => { e.preventDefault(); insertAtCaret(v.token); } })));
 
   const condChips = el('div', { class: 'chips' },
@@ -315,15 +317,20 @@ function richEditor(initialHtml, placeholder) {
 // The {{placeholders}} the engine resolves (see buildContext).
 function availableVariables() {
   const base = [
-    { token: '{{item.name}}', hint: 'Item name' },
-    { token: '{{item.id}}', hint: 'Item id' },
-    { token: '{{group.title}}', hint: 'Group title' },
-    { token: '{{status}}', hint: 'Item status label' },
+    { label: 'Item name', token: '{{item.name}}', hint: '{{item.name}} — item name' },
+    { label: 'Item id', token: '{{item.id}}', hint: '{{item.id}} — item id' },
+    { label: 'Group title', token: '{{group.title}}', hint: '{{group.title}} — group title' },
+    { label: 'Item status', token: '{{status}}', hint: '{{status}} — item status label' },
   ];
-  const cols = boardCols().map((c) => ({ token: `{{column.${c.id}}}`, hint: `${c.title} [${c.type}]` }));
+  const cols = boardCols().map((c) => ({
+    label: c.title, token: `{{column.${c.id}}}`, hint: `{{column.${c.id}}} — ${c.title} [${c.type}]`,
+  }));
   const subs = subCols().length
-    ? [{ token: '{{subitem.name}}', hint: 'Triggering subitem name (subitem rules)' }].concat(
-        subCols().map((c) => ({ token: `{{subitem.column.${c.id}}}`, hint: `subitem ${c.title} [${c.type}]` })),
+    ? [{ label: 'subitem: name', token: '{{subitem.name}}', hint: '{{subitem.name}} — triggering subitem name (subitem rules)' }].concat(
+        subCols().map((c) => ({
+          label: `subitem: ${c.title}`, token: `{{subitem.column.${c.id}}}`,
+          hint: `{{subitem.column.${c.id}}} — subitem ${c.title} [${c.type}]`,
+        })),
       )
     : [];
   return base.concat(cols).concat(subs);
@@ -1218,13 +1225,13 @@ function loadRuleIntoBuilder(rule) {
 
 // ── toast feedback ─────────────────────────────────────────────────────────────
 let toastTimer;
-function toast(msg, kind) {
+function toast(msg, kind, ms) {
   const t = $('toast');
-  t.className = 'toast ' + (kind === 'err' ? 'toast-err' : kind === 'ok' ? 'toast-ok' : '');
+  t.className = 'toast ' + (kind === 'err' ? 'toast-err' : kind === 'ok' ? 'toast-ok' : kind === 'warn' ? 'toast-warn' : '');
   t.textContent = msg;
   t.classList.remove('hidden');
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => t.classList.add('hidden'), kind === 'err' ? 7000 : 3500);
+  toastTimer = setTimeout(() => t.classList.add('hidden'), ms || (kind === 'err' ? 7000 : 3500));
 }
 
 // ── board + connect ────────────────────────────────────────────────────────────
@@ -1341,7 +1348,7 @@ function renderQueueFilters(all) {
   const distinct = (key) => [...new Set(all.map((a) => a[key]).filter((v) => v != null && v !== ''))].sort();
   const opts = (vals, allLabel) => [{ value: '', label: allLabel }, ...vals.map((v) => ({ value: String(v), label: String(v) }))];
   bar.appendChild(filterSelect('Item', opts(distinct('itemId'), 'All items'), queueFilter.item, (v) => { queueFilter.item = v; renderQueue(); }));
-  bar.appendChild(filterSelect('Status', opts(['pending', 'sent', 'cancelled', 'failed'], 'All statuses'), queueFilter.status, (v) => { queueFilter.status = v; renderQueue(); }));
+  bar.appendChild(filterSelect('Status', opts(['pending', 'sent', 'suppressed', 'cancelled', 'failed'], 'All statuses'), queueFilter.status, (v) => { queueFilter.status = v; renderQueue(); }));
   bar.appendChild(filterSelect('Action', opts(['email', 'slack', 'set_column'], 'All actions'), queueFilter.type, (v) => { queueFilter.type = v; renderQueue(); }));
   bar.appendChild(filterSelect('Rule', opts(distinct('ruleId'), 'All rules'), queueFilter.rule, (v) => { queueFilter.rule = v; renderQueue(); }));
 }
@@ -1372,6 +1379,10 @@ function renderQueue() {
       el('div', { class: 'hint', text: summary }),
     ]);
     const meta = el('div', { class: 'meta', text: `rule ${a.ruleId} · item ${a.itemId} · due ${fmtDate(a.dueAt)}` });
+    // Why nothing was delivered — otherwise a suppressed row is indistinguishable from a sent one.
+    const reason = a.status === 'suppressed'
+      ? el('div', { class: 'reason', text: '🚫 ' + (a.statusReason || 'Withheld — the recipient is opted out of email.') })
+      : null;
     const when = el('input', { type: 'datetime-local' });
     const acts = el('div', { class: 'acts' }, [
       el('button', { text: '▶ run now', onclick: () => queueAction(a.id, 'run') }),
@@ -1382,7 +1393,7 @@ function renderQueue() {
       } }),
       el('button', { class: 'danger', text: 'delete', onclick: () => { if (confirm(`Delete this scheduled ${a.actionType} action (rule ${a.ruleId})?`)) queueAction(a.id, 'delete'); } }),
     ]);
-    list.appendChild(el('div', { class: 'qitem' }, [head, meta, acts]));
+    list.appendChild(el('div', { class: 'qitem' }, [head, meta, reason, acts].filter(Boolean)));
   });
 }
 
@@ -1394,7 +1405,12 @@ async function queueAction(id, kind, body) {
   else if (kind === 'delete') { opts.method = 'DELETE'; }
   const res = await fetch(url, opts);
   const data = await res.json().catch(() => ({}));
-  if (res.ok) { toast(`Queue: ${kind} ok (action ${id}).`, 'ok'); loadQueue(); }
+  if (res.ok && data.suppressed) {
+    // A withheld email must never read as a successful send.
+    toast(`Not sent — ${data.reason || 'the recipient is opted out of email.'}`, 'warn', 9000);
+    loadQueue();
+  }
+  else if (res.ok) { toast(`Queue: ${kind} ok (action ${id}).`, 'ok'); loadQueue(); }
   else if (res.status === 401) toast('Unauthorized — append ?secret=YOUR_SECRET to the URL.', 'err');
   else toast(`Queue ${kind} failed: ${data.error || res.statusText}`, 'err');
 }

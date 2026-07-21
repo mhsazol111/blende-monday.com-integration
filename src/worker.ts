@@ -20,7 +20,7 @@ export async function runDueActions(
   engine: RulesEngine,
   now: number = Date.now(),
   opts: WorkerOptions = {},
-): Promise<{ sent: number; failed: number; retried: number; skipped: number }> {
+): Promise<{ sent: number; failed: number; retried: number; skipped: number; suppressed: number }> {
   const maxAttempts = opts.maxAttempts ?? env.workerMaxAttempts;
   const backoff = opts.retryBackoffMs ?? env.workerRetryBackoffMs;
 
@@ -29,6 +29,7 @@ export async function runDueActions(
   let failed = 0;
   let retried = 0;
   let skipped = 0;
+  let suppressed = 0;
   for (const row of due) {
     try {
       // Fire-time gate: a timed reminder self-cancels if the state that justified it
@@ -38,9 +39,16 @@ export async function runDueActions(
         skipped++;
         continue;
       }
-      await engine.dispatch(row.actionType, row.payload, { itemId: row.itemId });
-      store.markSent(row.id, Date.now());
-      sent++;
+      const res = await engine.dispatch(row.actionType, row.payload, { itemId: row.itemId });
+      if (res.suppressed) {
+        // Terminal, like `sent` — retrying can't change consent — but recorded
+        // distinctly with its reason so the queue UI shows why nothing arrived.
+        store.markSuppressed(row.id, Date.now(), res.suppressed.detail);
+        suppressed++;
+      } else {
+        store.markSent(row.id, Date.now());
+        sent++;
+      }
     } catch (err) {
       const attempts = row.attempts + 1;
       if (attempts >= maxAttempts) {
@@ -54,10 +62,12 @@ export async function runDueActions(
       }
     }
   }
-  if (sent || failed || retried || skipped) {
-    log.info(`Worker: ${sent} sent, ${retried} retrying, ${failed} failed, ${skipped} skipped.`);
+  if (sent || failed || retried || skipped || suppressed) {
+    log.info(
+      `Worker: ${sent} sent, ${retried} retrying, ${failed} failed, ${skipped} skipped, ${suppressed} suppressed (opted out).`,
+    );
   }
-  return { sent, failed, retried, skipped };
+  return { sent, failed, retried, skipped, suppressed };
 }
 
 export interface WorkerHandle {

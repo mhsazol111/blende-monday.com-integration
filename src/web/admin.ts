@@ -194,10 +194,16 @@ export function registerAdmin(app: FastifyInstance, engine?: RulesEngine, store?
     const action = store.getAction(id);
     if (!action) return reply.code(404).send({ error: 'action not found' });
     try {
-      await engine.dispatch(action.actionType, action.payload, { itemId: action.itemId });
+      const res = await engine.dispatch(action.actionType, action.payload, { itemId: action.itemId });
+      if (res.suppressed) {
+        // Not a failure — but never report it as a successful send either.
+        store.markSuppressed(id, Date.now(), res.suppressed.detail);
+        log.info(`Queue: action ${id} suppressed — ${res.suppressed.detail}`);
+        return { ok: true, suppressed: true, reason: res.suppressed.detail };
+      }
       store.markSent(id, Date.now());
       log.info(`Queue: ran action ${id} (${action.actionType}) now.`);
-      return { ok: true };
+      return { ok: true, suppressed: false };
     } catch (err: any) {
       log.warn(`Queue: run action ${id} failed: ${err?.message}`);
       return reply.code(502).send({ error: err?.message ?? 'dispatch failed' });

@@ -52,11 +52,22 @@ export interface HandleResult {
   scheduled: number;
   cleared: number;
   deferred: number;
+  /** Deliberately not delivered (e.g. the item is opted out of email). */
+  suppressed: number;
   /** Actions that threw (isolated so they don't abort the rest). */
   failed: number;
 }
 
-type ActionOutcome = 'executed' | 'scheduled' | 'cleared' | 'deferred' | 'skipped';
+type ActionOutcome = 'executed' | 'scheduled' | 'cleared' | 'deferred' | 'skipped' | 'suppressed';
+
+/**
+ * Outcome of a single `dispatch`. A suppressed send is NOT an error — the caller
+ * should record it as terminal (never retried) but report it distinctly, so a
+ * silently-withheld email is never presented to the user as a successful send.
+ */
+export interface DispatchResult {
+  suppressed?: { reason: 'email_opt_out'; detail: string };
+}
 
 /** Which item a dispatched payload belongs to (drives the email opt-out gate). */
 export interface DispatchContext {
@@ -95,7 +106,7 @@ export class RulesEngine {
   }
 
   async handleEvent(event: NormalizedEvent): Promise<HandleResult> {
-    const result: HandleResult = { matched: 0, executed: 0, scheduled: 0, cleared: 0, deferred: 0, failed: 0 };
+    const result: HandleResult = { matched: 0, executed: 0, scheduled: 0, cleared: 0, deferred: 0, suppressed: 0, failed: 0 };
 
     const itemId = itemIdToHydrate(event);
     if (itemId === undefined) return result;
@@ -239,8 +250,8 @@ export class RulesEngine {
       return 'scheduled';
     }
 
-    await this.dispatch(action.type, renderAction(action, ctx, item).payload, { item });
-    return 'executed';
+    const res = await this.dispatch(action.type, renderAction(action, ctx, item).payload, { item });
+    return res.suppressed ? 'suppressed' : 'executed';
   }
 
   /**
@@ -290,13 +301,14 @@ export class RulesEngine {
    * email opt-out gate can read its live consent flag at send time; pass the already
    * hydrated `item` when you have one to avoid a redundant monday call.
    */
-  async dispatch(actionType: QueuedActionType, payload: unknown, ctx?: DispatchContext): Promise<void> {
+  async dispatch(actionType: QueuedActionType, payload: unknown, ctx?: DispatchContext): Promise<DispatchResult> {
     if (actionType === 'email') {
       const p = payload as { to: string[]; subject: string; body: string; html?: string };
       if ((await this.emailOptOutState(ctx)) === 'block') {
         const who = ctx?.item?.id ?? ctx?.itemId;
-        log.warn(`[email] suppressed — item ${who} is opted out of email (subject="${p.subject}").`);
-        return;
+        const detail = `Item ${who} is marked “${this.emailOptOut.blockValue}” on the email opt-out column (${this.emailOptOut.columnId}) — email withheld.`;
+        log.warn(`[email] suppressed — ${detail} (subject="${p.subject}")`);
+        return { suppressed: { reason: 'email_opt_out', detail } };
       }
       await this.senders.sendEmail(p);
     } else if (actionType === 'set_column') {
@@ -309,6 +321,7 @@ export class RulesEngine {
       const p = payload as { webhookUrl: string; text: string };
       await this.senders.sendSlack(p);
     }
+    return {};
   }
 
   /**
@@ -549,6 +562,7 @@ function bump(result: HandleResult, outcome: ActionOutcome) {
   else if (outcome === 'scheduled') result.scheduled++;
   else if (outcome === 'cleared') result.cleared++;
   else if (outcome === 'deferred') result.deferred++;
+  else if (outcome === 'suppressed') result.suppressed++;
 }
 
 // ── matching helpers ────────────────────────────────────────────────────────

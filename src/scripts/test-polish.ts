@@ -185,6 +185,20 @@ async function main() {
       return emails.length;
     };
 
+    // The immediate path reports suppression in HandleResult rather than
+    // counting a withheld email as `executed`.
+    {
+      const senders: Senders = { async sendEmail() {}, async sendSlack() {} };
+      const engine = new RulesEngine({
+        rules: [emailRule], senders,
+        hydrate: async () => itemWithFlag('No'),
+        emailOptOut: { columnId: OPTOUT, blockValue: 'No' },
+      });
+      const res = await engine.handleEvent(entered);
+      check('immediate suppressed email is counted suppressed, not executed', res.suppressed === 1 && res.executed === 0);
+      check('immediate suppressed email is not counted as failed', res.failed === 0);
+    }
+
     check('gate off (no column configured) → sends', (await sentWith('No', { columnId: '', blockValue: 'No' })) === 1);
     check('flag "No" → suppressed', (await sentWith('No')) === 0);
     check('flag "Yes" → sends', (await sentWith('Yes')) === 1);
@@ -224,7 +238,17 @@ async function main() {
 
       const res = await runDueActions(store, engine, now);
       check('queued email for an opted-out item is suppressed at send time', emails.length === 0);
-      check('suppressed queued email is marked sent, not failed', res.sent === 1 && res.failed === 0);
+      check(
+        'suppressed queued email counts as suppressed, not sent/failed',
+        res.suppressed === 1 && res.sent === 0 && res.failed === 0,
+      );
+
+      // Visible in the queue UI: its own terminal status, with a reason, and
+      // never re-dispatched.
+      const row = store.listActions()[0];
+      check('suppressed row has status "suppressed"', row.status === 'suppressed');
+      check('suppressed row carries a human-readable reason', !!row.statusReason && /opted out|withheld/i.test(row.statusReason));
+      check('suppressed row is terminal (not re-dispatched)', store.dueActions(now + 1_000_000).length === 0);
       store.close();
     }
 

@@ -409,7 +409,28 @@ monday call), the worker and admin pass `itemId`.
     into the queued payload (`engine.ts:356`). The gate fixes the consent half; a delayed email whose
     address column changes after arming still uses the old address.
 
-**All offline suites pass: `npm test` → 164 checks (ingress 10, engine 71, queue 32, polish 23,
+**Suppression is now visible, not silent (2026-07-21):** a withheld email was reported exactly like a
+delivered one — the "run now" button toasted success, the queue row read `sent`, and the only trace
+was a log line. Cause: `dispatch` returned `void`, so its callers couldn't distinguish "suppressed"
+from "delivered". Now `dispatch` returns **`DispatchResult`** (`{ suppressed?: { reason:
+'email_opt_out', detail } }`, `src/rules/engine.ts`) and every caller reports it:
+  - **Queue:** new terminal status **`suppressed`** (`QueuedStatus`, `src/queue/types.ts`) +
+    `store.markSuppressed(id, at, reason)` and a `queued_actions.status_reason` column. It is
+    terminal like `sent` (never retried — consent won't change on retry) but distinct. The column is
+    added by an idempotent **`ALTER TABLE`** (`addColumnIfMissing`, `src/db/store.ts`) since
+    `CREATE TABLE IF NOT EXISTS` is a no-op on the deployed DB; verified against a copy of the real
+    `data/automation.sqlite`.
+  - **Worker:** counts `suppressed` separately from `sent` in `runDueActions`' return + log line.
+  - **Admin "run now":** returns `{ ok: true, suppressed: true, reason }`; the UI shows an amber
+    **"Not sent — …"** toast instead of the green success one.
+  - **Engine (immediate path):** `HandleResult.suppressed` — a withheld email no longer counts as
+    `executed` (nor as `failed`, since it isn't an error).
+  - **UI:** amber `SUPPRESSED` badge, an inline 🚫 reason line on the queue row naming the item and
+    column, and `suppressed` in the status filter (`web/app.js`, `web/index.html`).
+  - Verified live: a queued email for real opted-out item `12552856576` → suppressed with reason,
+    while item `11477159468` (flag empty) sent — checked in a real browser.
+
+**All offline suites pass: `npm test` → 169 checks (ingress 10, engine 71, queue 32, polish 28,
 cutover 9, admin 7, exchange 12).**
 
 **Configurator:** run `npm run dev` (or `npm start`) and open `http://localhost:<PORT>/`. If
