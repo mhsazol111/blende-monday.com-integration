@@ -68,8 +68,12 @@ export function registerAdmin(app: FastifyInstance, engine?: RulesEngine, store?
   app.get('/api/config', async () => ({
     defaultBoardId: env.mondayBoardId || null,
     secretRequired: !!env.webhookSharedSecret,
-    emailOptOut: env.emailOptOutColumnId
-      ? { columnId: env.emailOptOutColumnId, blockValue: env.emailOptOutBlockValue }
+    contactOptOut: env.contactOptOutColumnId
+      ? {
+          columnId: env.contactOptOutColumnId,
+          blockValue: env.contactOptOutBlockValue,
+          channels: env.contactOptOutChannels,
+        }
       : null,
   }));
 

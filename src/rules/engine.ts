@@ -34,16 +34,21 @@ export interface EngineDeps {
   cloner?: Cloner;
   columnWriter?: ColumnWriter;
   updateWriter?: UpdateWriter;
-  /** Patient contact-consent gate. Defaults to the EMAIL_OPTOUT_* env vars;
+  /** Patient contact-consent gate. Defaults to the CONTACT_OPTOUT_* env vars;
    *  injectable so tests can configure it (env is read at module load). */
-  emailOptOut?: EmailOptOutConfig;
+  contactOptOut?: ContactOptOutConfig;
 }
 
-export interface EmailOptOutConfig {
+/** Notification channels the consent gate can suppress. */
+export type ContactChannel = 'email' | 'slack';
+
+export interface ContactOptOutConfig {
   /** Board column holding the flag. Empty string disables the gate. */
   columnId: string;
-  /** The one value that suppresses email (compared trimmed + case-insensitively). */
+  /** The one value that suppresses contact (compared trimmed + case-insensitively). */
   blockValue: string;
+  /** Channels the gate applies to. Empty ⇒ the gate never suppresses anything. */
+  channels: ContactChannel[];
 }
 
 export interface HandleResult {
@@ -63,10 +68,10 @@ type ActionOutcome = 'executed' | 'scheduled' | 'cleared' | 'deferred' | 'skippe
 /**
  * Outcome of a single `dispatch`. A suppressed send is NOT an error — the caller
  * should record it as terminal (never retried) but report it distinctly, so a
- * silently-withheld email is never presented to the user as a successful send.
+ * silently-withheld notification is never presented to the user as a successful send.
  */
 export interface DispatchResult {
-  suppressed?: { reason: 'email_opt_out'; detail: string };
+  suppressed?: { reason: 'contact_opt_out'; channel: ContactChannel; detail: string };
 }
 
 /** Which item a dispatched payload belongs to (drives the email opt-out gate). */
@@ -84,7 +89,7 @@ export class RulesEngine {
   private readonly cloner: Cloner;
   private readonly columnWriter: ColumnWriter;
   private readonly updateWriter: UpdateWriter;
-  private readonly emailOptOut: EmailOptOutConfig;
+  private readonly contactOptOut: ContactOptOutConfig;
 
   constructor(deps: EngineDeps) {
     this.rules = deps.rules;
@@ -94,9 +99,10 @@ export class RulesEngine {
     this.cloner = deps.cloner ?? cloneTemplateSubitems;
     this.columnWriter = deps.columnWriter ?? setColumnValue;
     this.updateWriter = deps.updateWriter ?? postItemUpdate;
-    this.emailOptOut = deps.emailOptOut ?? {
-      columnId: env.emailOptOutColumnId,
-      blockValue: env.emailOptOutBlockValue,
+    this.contactOptOut = deps.contactOptOut ?? {
+      columnId: env.contactOptOutColumnId,
+      blockValue: env.contactOptOutBlockValue,
+      channels: env.contactOptOutChannels,
     };
   }
 
@@ -257,25 +263,26 @@ export class RulesEngine {
   /**
    * Global patient contact-consent gate.
    *
-   * Returns 'allow' | 'block'; THROWS if the flag can't be read (fail closed) so the
-   * caller's retry/error handling sees it rather than silently mailing an item whose
-   * consent state is unknown. An absent or empty column value means allowed — the
-   * board manager only ever has to mark the exceptions.
+   * Returns 'allow' | 'block' for one channel; THROWS if the flag can't be read (fail
+   * closed) so the caller's retry/error handling sees it rather than silently
+   * contacting an item whose consent state is unknown. An absent or empty column value
+   * means allowed — the board manager only ever has to mark the exceptions.
    */
-  private async emailOptOutState(ctx?: DispatchContext): Promise<'allow' | 'block'> {
-    const { columnId, blockValue } = this.emailOptOut;
+  private async contactOptOutState(channel: ContactChannel, ctx?: DispatchContext): Promise<'allow' | 'block'> {
+    const { columnId, blockValue, channels } = this.contactOptOut;
     if (!columnId) return 'allow'; // gate not configured
+    if (!channels.includes(channel)) return 'allow'; // channel not gated
 
     let item = ctx?.item;
     if (!item) {
       if (ctx?.itemId === undefined) {
         throw new Error(
-          `Email opt-out gate: no item context for this send (column "${columnId}" configured); refusing to send.`,
+          `Contact opt-out gate: no item context for this ${channel} send (column "${columnId}" configured); refusing to send.`,
         );
       }
       const hydrated = await this.hydrate(ctx.itemId); // may throw — intentionally propagates
       if (!hydrated) {
-        throw new Error(`Email opt-out gate: could not hydrate item ${ctx.itemId}; refusing to send.`);
+        throw new Error(`Contact opt-out gate: could not hydrate item ${ctx.itemId}; refusing to send.`);
       }
       item = hydrated;
     }
@@ -283,10 +290,10 @@ export class RulesEngine {
     const col = item.columns[columnId];
     if (col === undefined) {
       // Misconfigured id (typo/deleted column) — allow, but say so loudly. The
-      // alternative silently blocks ALL mail, which is far harder to notice.
+      // alternative silently blocks ALL notifications, which is far harder to notice.
       log.warn(
-        `Email opt-out gate: column "${columnId}" not found on item ${item.id}; ` +
-          `treating as allowed. Check EMAIL_OPTOUT_COLUMN_ID.`,
+        `Contact opt-out gate: column "${columnId}" not found on item ${item.id}; ` +
+          `treating as allowed. Check CONTACT_OPTOUT_COLUMN_ID.`,
       );
       return 'allow';
     }
@@ -298,17 +305,16 @@ export class RulesEngine {
   /**
    * Send a rendered payload now (also used by the worker for due actions and by the
    * configurator's "run now"). `ctx` carries the item this payload belongs to so the
-   * email opt-out gate can read its live consent flag at send time; pass the already
+   * contact opt-out gate can read its live consent flag at send time; pass the already
    * hydrated `item` when you have one to avoid a redundant monday call.
    */
   async dispatch(actionType: QueuedActionType, payload: unknown, ctx?: DispatchContext): Promise<DispatchResult> {
     if (actionType === 'email') {
       const p = payload as { to: string[]; subject: string; body: string; html?: string };
-      if ((await this.emailOptOutState(ctx)) === 'block') {
-        const who = ctx?.item?.id ?? ctx?.itemId;
-        const detail = `Item ${who} is marked “${this.emailOptOut.blockValue}” on the email opt-out column (${this.emailOptOut.columnId}) — email withheld.`;
+      if ((await this.contactOptOutState('email', ctx)) === 'block') {
+        const detail = this.optOutDetail('email', ctx);
         log.warn(`[email] suppressed — ${detail} (subject="${p.subject}")`);
-        return { suppressed: { reason: 'email_opt_out', detail } };
+        return { suppressed: { reason: 'contact_opt_out', channel: 'email', detail } };
       }
       await this.senders.sendEmail(p);
     } else if (actionType === 'set_column') {
@@ -319,9 +325,27 @@ export class RulesEngine {
       await this.updateWriter(p);
     } else {
       const p = payload as { webhookUrl: string; text: string };
+      // Slack is gated too: a Slack post about a patient is still a notification
+      // about someone who asked not to be contacted. Drop 'slack' from
+      // CONTACT_OPTOUT_CHANNELS if internal pings should keep flowing.
+      if ((await this.contactOptOutState('slack', ctx)) === 'block') {
+        const detail = this.optOutDetail('slack', ctx);
+        log.warn(`[slack] suppressed — ${detail}`);
+        return { suppressed: { reason: 'contact_opt_out', channel: 'slack', detail } };
+      }
       await this.senders.sendSlack(p);
     }
     return {};
+  }
+
+  /** Human-readable "why nothing was sent", shown in the queue and the admin UI. */
+  private optOutDetail(channel: ContactChannel, ctx?: DispatchContext): string {
+    const who = ctx?.item?.id ?? ctx?.itemId;
+    const what = channel === 'email' ? 'email' : 'Slack notification';
+    return (
+      `Item ${who} is marked “${this.contactOptOut.blockValue}” on the contact opt-out ` +
+      `column (${this.contactOptOut.columnId}) — ${what} withheld.`
+    );
   }
 
   /**

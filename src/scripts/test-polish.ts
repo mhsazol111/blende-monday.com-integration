@@ -1,5 +1,5 @@
 import assert from 'node:assert';
-import { RulesEngine } from '../rules/engine.js';
+import { RulesEngine, type ContactOptOutConfig } from '../rules/engine.js';
 import { SqliteStore } from '../db/store.js';
 import { runDueActions } from '../worker.js';
 import type { ItemContext } from '../monday/hydrate.js';
@@ -135,7 +135,12 @@ async function main() {
         throw new Error('slack down');
       },
     };
-    const engine = new RulesEngine({ rules: [], senders: failing, store });
+    // Gate explicitly off: this case is about retry, and a configured gate would
+    // otherwise try to hydrate the item over the network.
+    const engine = new RulesEngine({
+      rules: [], senders: failing, store,
+      contactOptOut: { columnId: '', blockValue: 'No', channels: [] },
+    });
     const now = Date.now();
     store.enqueue({ itemId: 1, ruleId: 'r', actionType: 'slack', payload: { webhookUrl: '', text: 'x' }, dueAt: now });
 
@@ -148,9 +153,10 @@ async function main() {
     store.close();
   }
 
-  // 3) email opt-out gate (patient contact consent).
+  // 3) contact opt-out gate (patient contact consent) — email AND slack.
   {
     const OPTOUT = 'color_optout';
+    const BOTH: ContactOptOutConfig = { columnId: OPTOUT, blockValue: 'No', channels: ['email', 'slack'] };
     const itemWithFlag = (text: string | null): ItemContext => ({
       ...itemWithPeople,
       columns: {
@@ -171,7 +177,7 @@ async function main() {
     /** Fire the immediate email rule and report how many mails went out. */
     const sentWith = async (
       flag: string | null,
-      optOut: { columnId: string; blockValue: string } | undefined = { columnId: OPTOUT, blockValue: 'No' },
+      optOut: ContactOptOutConfig = BOTH,
     ): Promise<number> => {
       const emails: EmailMessage[] = [];
       const senders: Senders = { async sendEmail(m) { emails.push(m); }, async sendSlack() {} };
@@ -179,7 +185,7 @@ async function main() {
         rules: [emailRule],
         senders,
         hydrate: async () => itemWithFlag(flag),
-        emailOptOut: optOut,
+        contactOptOut: optOut,
       });
       await engine.handleEvent(entered);
       return emails.length;
@@ -192,32 +198,45 @@ async function main() {
       const engine = new RulesEngine({
         rules: [emailRule], senders,
         hydrate: async () => itemWithFlag('No'),
-        emailOptOut: { columnId: OPTOUT, blockValue: 'No' },
+        contactOptOut: BOTH,
       });
       const res = await engine.handleEvent(entered);
       check('immediate suppressed email is counted suppressed, not executed', res.suppressed === 1 && res.executed === 0);
       check('immediate suppressed email is not counted as failed', res.failed === 0);
     }
 
-    check('gate off (no column configured) → sends', (await sentWith('No', { columnId: '', blockValue: 'No' })) === 1);
+    check('gate off (no column configured) → sends', (await sentWith('No', { ...BOTH, columnId: '' })) === 1);
+    check('email not in gated channels → sends', (await sentWith('No', { ...BOTH, channels: ['slack'] })) === 1);
     check('flag "No" → suppressed', (await sentWith('No')) === 0);
     check('flag "Yes" → sends', (await sentWith('Yes')) === 1);
     check('flag empty → sends (default-allow)', (await sentWith('')) === 1);
     check('column absent → sends (default-allow)', (await sentWith(null)) === 1);
     check('flag " no " (case + whitespace) → suppressed', (await sentWith(' no ')) === 0);
 
-    // Slack is internal staff notification, not patient contact — never gated.
-    {
+    // Slack is gated too: a Slack post about a patient is still contact about
+    // someone who asked not to be contacted (client request, 2026-07-29).
+    const slacksWith = async (flag: string | null, optOut: ContactOptOutConfig = BOTH) => {
       let slacks = 0;
       const senders: Senders = { async sendEmail() {}, async sendSlack() { slacks++; } };
       const engine = new RulesEngine({
         rules: [{ ...emailRule, id: 'optout-slack', actions: [{ type: 'slack', when: { mode: 'immediate' }, text: 'hi' }] }],
         senders,
-        hydrate: async () => itemWithFlag('No'),
-        emailOptOut: { columnId: OPTOUT, blockValue: 'No' },
+        hydrate: async () => itemWithFlag(flag),
+        contactOptOut: optOut,
       });
-      await engine.handleEvent(entered);
-      check('slack unaffected by an opted-out item', slacks === 1);
+      const res = await engine.handleEvent(entered);
+      return { slacks, res };
+    };
+
+    {
+      const blocked = await slacksWith('No');
+      check('slack suppressed for an opted-out item', blocked.slacks === 0);
+      check('suppressed slack is counted suppressed, not executed/failed',
+        blocked.res.suppressed === 1 && blocked.res.executed === 0 && blocked.res.failed === 0);
+      check('slack sends when the item is not opted out', (await slacksWith('Yes')).slacks === 1);
+      check('slack sends when the flag is empty (default-allow)', (await slacksWith('')).slacks === 1);
+      check('slack sends when slack is not a gated channel',
+        (await slacksWith('No', { ...BOTH, channels: ['email'] })).slacks === 1);
     }
 
     // The case a per-rule condition could not cover: a queued email is gated at
@@ -231,7 +250,7 @@ async function main() {
         senders,
         store,
         hydrate: async () => itemWithFlag('No'),
-        emailOptOut: { columnId: OPTOUT, blockValue: 'No' },
+        contactOptOut: BOTH,
       });
       const now = Date.now();
       store.enqueue({ itemId: 100, ruleId: 'r', actionType: 'email', payload: { to: ['p@example.com'], subject: 's', body: 'b' }, dueAt: now });
@@ -252,8 +271,32 @@ async function main() {
       store.close();
     }
 
+    // Same for a queued (delayed) Slack post — e.g. an "N days in group" nag
+    // armed before the patient opted out.
+    {
+      const store = new SqliteStore(':memory:');
+      let slacks = 0;
+      const senders: Senders = { async sendEmail() {}, async sendSlack() { slacks++; } };
+      const engine = new RulesEngine({
+        rules: [], senders, store,
+        hydrate: async () => itemWithFlag('No'),
+        contactOptOut: BOTH,
+      });
+      const now = Date.now();
+      store.enqueue({ itemId: 100, ruleId: 'r', actionType: 'slack', payload: { webhookUrl: 'https://hooks.example', text: 'x' }, dueAt: now });
+
+      const res = await runDueActions(store, engine, now);
+      check('queued slack for an opted-out item is suppressed at send time', slacks === 0);
+      check('suppressed queued slack counts as suppressed, not sent/failed',
+        res.suppressed === 1 && res.sent === 0 && res.failed === 0);
+      const row = store.listActions()[0];
+      check('suppressed slack row is terminal with a reason',
+        row.status === 'suppressed' && /withheld/i.test(row.statusReason ?? ''));
+      store.close();
+    }
+
     // Unreadable flag → fail closed: throw, so the worker retries rather than
-    // mailing an item whose consent state is unknown.
+    // contacting an item whose consent state is unknown.
     {
       const store = new SqliteStore(':memory:');
       const emails: EmailMessage[] = [];
@@ -263,7 +306,7 @@ async function main() {
         senders,
         store,
         hydrate: async () => { throw new Error('monday down'); },
-        emailOptOut: { columnId: OPTOUT, blockValue: 'No' },
+        contactOptOut: BOTH,
       });
       const now = Date.now();
       store.enqueue({ itemId: 100, ruleId: 'r', actionType: 'email', payload: { to: ['p@example.com'], subject: 's', body: 'b' }, dueAt: now });

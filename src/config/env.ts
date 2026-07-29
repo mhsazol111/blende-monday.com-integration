@@ -22,6 +22,15 @@ export function required(name: string): string {
   return value;
 }
 
+/** Parse a comma-separated channel list, ignoring unknown names. */
+function parseChannels(raw: string): Array<'email' | 'slack'> {
+  const known = ['email', 'slack'] as const;
+  return raw
+    .split(',')
+    .map((s) => s.trim().toLowerCase())
+    .filter((s): s is (typeof known)[number] => (known as readonly string[]).includes(s));
+}
+
 export const env = {
   // monday
   get mondayApiToken() {
@@ -65,13 +74,19 @@ export const env = {
   smtpFromName: optional('SMTP_FROM_NAME', 'Monday Automation'),
   smtpFromEmail: optional('SMTP_FROM_EMAIL', 'no-reply@example.com'),
 
-  // email — patient contact-consent gate. When `emailOptOutColumnId` names a board
-  // column, every outgoing email (immediate, queued and admin "run now") is checked
-  // against that column's live value at send time; an item whose value equals
-  // `emailOptOutBlockValue` is suppressed. Empty column id disables the gate
-  // entirely; an empty/absent column value means allowed (default-yes).
-  emailOptOutColumnId: optional('EMAIL_OPTOUT_COLUMN_ID'),
-  emailOptOutBlockValue: optional('EMAIL_OPTOUT_BLOCK_VALUE', 'No'),
+  // patient contact-consent gate. When `contactOptOutColumnId` names a board column,
+  // every outgoing notification on a gated channel (immediate, queued and admin
+  // "run now") is checked against that column's live value at send time; an item
+  // whose value equals `contactOptOutBlockValue` is suppressed. Empty column id
+  // disables the gate entirely; an empty/absent column value means allowed
+  // (default-yes). The EMAIL_OPTOUT_* names are the original ones and still work.
+  contactOptOutColumnId: optional('CONTACT_OPTOUT_COLUMN_ID') || optional('EMAIL_OPTOUT_COLUMN_ID'),
+  contactOptOutBlockValue:
+    optional('CONTACT_OPTOUT_BLOCK_VALUE') || optional('EMAIL_OPTOUT_BLOCK_VALUE', 'No'),
+  /** Channels the gate applies to. Slack is included by default: a Slack post about
+   *  a patient is still contact about someone who asked not to be contacted. Set to
+   *  `email` alone to let internal Slack pings through for opted-out patients. */
+  contactOptOutChannels: parseChannels(optional('CONTACT_OPTOUT_CHANNELS', 'email,slack')),
 
   // email — Microsoft Graph (Exchange Online) transport, OAuth2 client-credentials
   msGraphTenantId: optional('MS_GRAPH_TENANT_ID'),

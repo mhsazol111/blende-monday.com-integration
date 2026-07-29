@@ -402,8 +402,9 @@ monday call), the worker and admin pass `itemId`.
     context) ⇒ **throws** → the worker's existing retry/backoff retries 3× then marks `failed`, so a
     transient monday blip recovers and a persistent one is visible. An explicit opt-out returns
     silently (+warn) and is marked `sent` — retrying can't change the answer.
-  - **Scope: email only.** Slack is internal staff notification, not patient contact.
-  - UI: `GET /api/config` returns `emailOptOut`, and the email action editor shows a hint stating
+  - **Scope: email only.** Slack is internal staff notification, not patient contact. _(Superseded
+    2026-07-29 — the gate now covers Slack too; see below.)_
+  - UI: `GET /api/config` returns the gate config, and the email action editor shows a hint stating
     whether the gate is active and on which column — so nobody re-implements it as a condition.
   - **Unchanged pre-existing gap:** recipient *addresses* are still resolved at arm time and frozen
     into the queued payload (`engine.ts:356`). The gate fixes the consent half; a delayed email whose
@@ -430,7 +431,33 @@ from "delivered". Now `dispatch` returns **`DispatchResult`** (`{ suppressed?: {
   - Verified live: a queued email for real opted-out item `12552856576` → suppressed with reason,
     while item `11477159468` (flag empty) sent — checked in a real browser.
 
-**All offline suites pass: `npm test` → 169 checks (ingress 10, engine 71, queue 32, polish 28,
+**Opt-out gate now covers Slack (2026-07-29):** the client asked that an item marked "do not contact"
+suppress its **Slack** notifications too, not just email — so the email-only gate became a
+**channel-aware contact gate**. `EmailOptOutConfig` → **`ContactOptOutConfig`** (`columnId`,
+`blockValue`, **`channels: ('email'|'slack')[]`**), `emailOptOutState` → `contactOptOutState(channel,
+ctx)`, and `dispatch`'s **slack branch** now runs the same check as the email branch; the suppression
+detail names the channel (`optOutDetail`). `DispatchResult.suppressed` gained `channel` and its
+`reason` is now `'contact_opt_out'` (was `'email_opt_out'` — only ever read in-process; queue rows
+store the human `detail`, so no migration). `EngineDeps.emailOptOut` → `contactOptOut`.
+  - **Env:** `CONTACT_OPTOUT_COLUMN_ID` / `CONTACT_OPTOUT_BLOCK_VALUE`, **falling back to the
+    original `EMAIL_OPTOUT_*` names** so the deployed Coolify config keeps working untouched. New
+    `CONTACT_OPTOUT_CHANNELS` (default `email,slack`) selects the gated channels — set it to `email`
+    to restore the old behavior without a code change.
+  - **Worth knowing before this ships:** most live Slack actions are *internal staff* pings
+    (`item_in_group_for_days` → slack: "X has sat in Hospital-CPMC for 3 days"), not messages to the
+    patient. With Slack gated, an opted-out patient's item stops generating those staff reminders as
+    well — that is what was asked for, but if the client only meant patient-facing Slack, the fix is
+    `CONTACT_OPTOUT_CHANNELS=email` plus a per-action override (not built).
+  - Everything else is unchanged and already channel-agnostic: the worker/admin/immediate paths mark
+    a suppressed Slack the same way (queue status `suppressed` + reason, amber badge, `HandleResult
+    .suppressed`), and fail-closed-on-unreadable-flag now protects Slack too.
+  - UI: `GET /api/config` returns `contactOptOut` (with `channels`); the hint moved to a shared
+    `optOutHint(channel)` shown in **both** the email and Slack action editors, and says explicitly
+    when a channel is *not* gated.
+  - `test:polish` +8 (28→36): slack suppressed / allowed / empty-flag / channel-not-gated, immediate
+    counts, queued slack suppressed at send time with a terminal reason.
+
+**All offline suites pass: `npm test` → 177 checks (ingress 10, engine 71, queue 32, polish 36,
 cutover 9, admin 7, exchange 12).**
 
 **Configurator:** run `npm run dev` (or `npm start`) and open `http://localhost:<PORT>/`. If
@@ -548,9 +575,11 @@ refer to that subitem; lets one message describe several subitems) — see `src/
 5. **Recipients**: literal addresses and/or any number of configurable columns (`toFromColumns`) —
    email/text columns are read directly, a people column resolves via the `users()` lookup. Merged
    and deduped. Resolved at **event time** (baked into the queued payload), not at send time.
-6. **Contact consent**: a board-wide opt-out column (`EMAIL_OPTOUT_COLUMN_ID`) suppresses email for
-   an item at **send time**, ahead of every email action — immediate, scheduled and admin "run now".
-   Empty/untouched ⇒ allowed. Rules need no condition for this. Slack is not gated.
+6. **Contact consent**: a board-wide opt-out column (`CONTACT_OPTOUT_COLUMN_ID`, or the original
+   `EMAIL_OPTOUT_COLUMN_ID`) suppresses notifications for an item at **send time**, ahead of every
+   email and Slack action — immediate, scheduled and admin "run now". Empty/untouched ⇒ allowed.
+   Rules need no condition for this. `CONTACT_OPTOUT_CHANNELS` (default `email,slack`) picks which
+   channels are gated; `set_column` / `post_update` (monday-internal writes) are never gated.
 
 ---
 
@@ -599,10 +628,12 @@ _From `npm run discover` on 2026-06-11. Use these IDs when authoring rules / fix
   (Next Action Date), `color_mm2wt4td` (Lead Status), `dropdown_mm2wc8hh` (Move To).
 - **Email-bearing columns** (recipient sources): `email_mm5az59s` (Patient Email, type `email` —
   added 2026-07), `text_mm2wm34h` (Referring Provider Email, type `text`).
-- **Email opt-out column:** `color_mm5e9gs2` ("Email Allowed", type `status`) — created 2026-07-20.
+- **Contact opt-out column:** `color_mm5e9gs2` ("Email Allowed", type `status`) — created 2026-07-20.
   Labels: `Yes`=1 (green), `No`=2 (red); **every existing item was left empty**, which the gate reads
-  as allowed. Set `EMAIL_OPTOUT_COLUMN_ID=color_mm5e9gs2` to activate. Verified live: the column
-  hydrates as `{text:"", value:null, type:"status"}` on untouched items → email allowed.
+  as allowed. Set `CONTACT_OPTOUT_COLUMN_ID=color_mm5e9gs2` (or the legacy `EMAIL_OPTOUT_COLUMN_ID`)
+  to activate — since 2026-07-29 it gates **Slack as well as email**, so its title now understates
+  what it does (consider renaming it to "Contact Allowed" on the board). Verified live: the column
+  hydrates as `{text:"", value:null, type:"status"}` on untouched items → contact allowed.
 
 > Note: the **Templates** group's id is `topics` (not a `group_xxx` slug) — don't assume group ids
 > follow one format.
@@ -731,8 +762,9 @@ webhook ingress, and runs the scheduler in-process.
    | `SLACK_WEBHOOK_URL` | the incoming-webhook URL |
    | `WEBHOOK_SHARED_SECRET` | a random string (required — it's public now) |
    | `SMTP_*` | only if you want live email (else dry-run) |
-   | `EMAIL_OPTOUT_COLUMN_ID` | `color_mm5e9gs2` (the "Email Allowed" column; blank = gate disabled) |
-   | `EMAIL_OPTOUT_BLOCK_VALUE` | `No` (default) — the value that suppresses email |
+   | `CONTACT_OPTOUT_COLUMN_ID` | `color_mm5e9gs2` (the "Email Allowed" column; blank = gate disabled). The old `EMAIL_OPTOUT_COLUMN_ID` name still works |
+   | `CONTACT_OPTOUT_BLOCK_VALUE` | `No` (default) — the value that suppresses contact |
+   | `CONTACT_OPTOUT_CHANNELS` | `email,slack` (default) — set to `email` to leave Slack ungated |
    | `PORT` | `3000` (matches the Dockerfile/EXPOSE) |
    `DATABASE_PATH` and `RULES_PATH` are already set to `/app/data/...` in the Dockerfile.
 3. **Persistent volume:** mount one at **`/app/data`** (rules + queue survive redeploys). Without

@@ -371,6 +371,19 @@ function subCols() { return state.structure?.subitemBoard?.columns ?? []; }
 function byType(cols, types) { return cols.filter((c) => types.includes(c.type)); }
 function colOptions(cols) { return cols.map((c) => ({ value: c.id, label: `${c.title} [${c.type}]` })); }
 function groupOptions() { return (state.structure?.board?.groups ?? []).map((g) => ({ value: g.id, label: g.title })); }
+// Server-side contact-consent gate — applies to every rule on the gated channels,
+// so say so in the action editors rather than letting people re-implement it as a
+// per-rule condition.
+function optOutHint(channel) {
+  const oo = state.config?.contactOptOut;
+  const what = channel === 'email' ? 'emailed' : 'posted to Slack';
+  if (!oo) return `Opt-out gate: not configured — every matching item will be ${what}. Set CONTACT_OPTOUT_COLUMN_ID to enable it.`;
+  if (!(oo.channels || []).includes(channel)) {
+    return `Opt-out gate does NOT cover ${channel}: it is configured on “${oo.columnId}” but CONTACT_OPTOUT_CHANNELS excludes ${channel}, so opted-out items are still ${what}.`;
+  }
+  const col = boardCols().find((c) => c.id === oo.columnId);
+  return `Opt-out gate is ACTIVE on “${col ? col.title : oo.columnId}”: any item whose value is “${oo.blockValue}” is skipped at send time (including already-scheduled sends). No condition needed on this rule.`;
+}
 function labelsFor(columnId) {
   const c = [...boardCols(), ...subCols()].find((x) => x.id === columnId);
   return (c?.labels ?? []).map((l) => ({ value: l.label, label: l.label }));
@@ -939,7 +952,12 @@ function makeActionRow(init) {
       const url = el('input', { placeholder: 'webhook URL (optional — uses default)', value: i?.webhookUrl || '' });
       const editor = richEditor(i?.text, 'Slack message — {{item.name}} entered {{group.title}}');
       const subPicker = state.structure?.subitemBoard ? subitemNamePicker(i?.subitemName) : null;
-      params.append(when.node, el('label', { text: 'Webhook URL' }), url, el('label', { text: 'Message (HTML → Slack mrkdwn)' }), editor.node);
+      params.append(
+        when.node,
+        el('label', { text: 'Webhook URL' }), url,
+        el('span', { class: 'hint', text: optOutHint('slack') }),
+        el('label', { text: 'Message (HTML → Slack mrkdwn)' }), editor.node,
+      );
       if (subPicker) params.append(
         el('label', { text: 'Subitem for {{subitem.*}} (optional)' }),
         subPicker.node,
@@ -953,14 +971,6 @@ function makeActionRow(init) {
         return a;
       };
     } else if (t === 'email') {
-      // Server-side contact-consent gate — applies to every email rule, so say so
-      // here rather than letting people re-implement it as a per-rule condition.
-      const optOutHint = () => {
-        const oo = state.config?.emailOptOut;
-        if (!oo) return 'Opt-out gate: not configured — every matching item will be emailed. Set EMAIL_OPTOUT_COLUMN_ID to enable it.';
-        const col = boardCols().find((c) => c.id === oo.columnId);
-        return `Opt-out gate is ACTIVE on “${col ? col.title : oo.columnId}”: any item whose value is “${oo.blockValue}” is skipped at send time (including already-scheduled emails). No condition needed on this rule.`;
-      };
       const when = whenControl(i?.when);
       const to = el('input', { placeholder: 'a@x.com, b@y.com', value: (i?.to || []).join(', ') });
       // Recipients can come from any column holding an address; a people column
@@ -985,7 +995,7 @@ function makeActionRow(init) {
         el('label', { text: 'To (literal addresses)' }), to,
         el('label', { text: 'To (from columns)' }), colsWrap,
         el('span', { class: 'hint', text: 'Tick any columns holding an address — email/text columns are read directly (comma- or semicolon-separated addresses supported); a people column resolves to the assigned person’s account email. All are merged with the literal list above and deduped.' }),
-        el('span', { class: 'hint', text: optOutHint() }),
+        el('span', { class: 'hint', text: optOutHint('email') }),
         el('label', { text: 'Subject' }), subject,
         el('label', { text: 'Body (rich HTML)' }), editor.node,
       );
@@ -1381,7 +1391,7 @@ function renderQueue() {
     const meta = el('div', { class: 'meta', text: `rule ${a.ruleId} · item ${a.itemId} · due ${fmtDate(a.dueAt)}` });
     // Why nothing was delivered — otherwise a suppressed row is indistinguishable from a sent one.
     const reason = a.status === 'suppressed'
-      ? el('div', { class: 'reason', text: '🚫 ' + (a.statusReason || 'Withheld — the recipient is opted out of email.') })
+      ? el('div', { class: 'reason', text: '🚫 ' + (a.statusReason || 'Withheld — the item is opted out of contact.') })
       : null;
     const when = el('input', { type: 'datetime-local' });
     const acts = el('div', { class: 'acts' }, [
