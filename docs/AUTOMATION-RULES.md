@@ -94,7 +94,7 @@ value` · `at a specific time`.
 
 ## 4. Board reference (from discovery)
 
-**Groups** — Unscheduled Intake `group_mm2wbwep` · NP Intake `group_title` · New HPSM
+**Groups** — Unscheduled Intake `group_mm2wbwep` · NP Intake `group_title` · HPSM
 `group_mm1nrj7r` · NP Consultation `group_mm1q43sd` · On Lok `group_mm1qxgcp` · Calling
 PCP `group_mm1qzc41` · In-office w/ Halsey `group_mm1q5y2h` · In-office w/ Lee
 `group_mm1qkfsj` · In-office w/ Vu `group_mm1qbqpv` · Hospital - CPMC `group_mm1qt38e` ·

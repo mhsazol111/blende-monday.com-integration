@@ -137,7 +137,7 @@ debugging CLI `npm run webhooks -- [list|register|delete]` (`src/scripts/webhook
 **`moved_from_group` condition (2026-06-17):** monday's `move_pulse_into_group` payload carries
 `sourceGroupId` (verified via `/api/last-events`); the normalizer maps it to
 `ItemEnteredGroupEvent.fromGroupId`, and the engine evaluates `moved_from_group` against it via a
-`ConditionContext`. Catches a specific transition (e.g. NP Intake → New HPSM) reliably, even on a
+`ConditionContext`. Catches a specific transition (e.g. NP Intake → HPSM) reliably, even on a
 first move (no DB history needed).
 
 **`set_column` write-back + minutes scheduling (2026-06-17):** new `set_column` action writes to
@@ -504,7 +504,7 @@ clone landing first).
     refresh now also re-points the shared `item` (`engine.ts:186`), so whichever rule clones first
     wins and the other correctly skips — order-independent.
   - **Behavior change to be aware of:** board-wide cloning now also covers 4 groups that had no
-    clone rule but DO have a matching template — **New HPSM** (template `HPSM`), **Calling PCP**,
+    clone rule but DO have a matching template — **HPSM** (template `HPSM`; the group was titled "HPSM" until 2026-07-29), **Calling PCP**,
     **Sample Forms for surgery coordination**, **CPMC Billing Issue Scripting**. Verified by running
     the real matcher against the live board: 13 of 14 non-Templates groups match a template;
     **Unscheduled Intake** matches none and stays a no-op. Narrowing this again would need a
@@ -698,7 +698,7 @@ _From `npm run discover` on 2026-06-11. Use these IDs when authoring rules / fix
   Provider Email** (`text_mm2wm34h`, type `text`).
 - **Template-source column** (subitem): `text_mm1n5vbd` (used by the legacy cloner).
 - **Groups** (id → title): `group_mm2wbwep`→Unscheduled Intake, `topics`→Templates,
-  `group_title`→NP Intake, `group_mm1nrj7r`→New HPSM, `group_mm1q43sd`→NP Consultation,
+  `group_title`→NP Intake, `group_mm1nrj7r`→HPSM (renamed from "HPSM" 2026-07-29), `group_mm1q43sd`→NP Consultation,
   `group_mm1qxgcp`→On Lok, `group_mm1qzc41`→Calling PCP, plus several office/hospital/post-surgery
   groups. (Re-run `npm run discover` for the full current list.)
 - Other notable columns: `date4` (Date), `date_mm2wzc0w` (Last Contacted), `date_mm2w90et`
