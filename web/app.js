@@ -365,6 +365,10 @@ function secret() {
   return new URLSearchParams(location.search).get('secret') || localStorage.getItem('mas_secret') || '';
 }
 
+// Sentinel for the scope picker's board-wide option. Never sent to the server —
+// buildRule turns it into `scope: { allGroups: true }`.
+const ANY_GROUP = '__any__';
+
 // ── column helpers ───────────────────────────────────────────────────────────
 function boardCols() { return state.structure?.board?.columns ?? []; }
 function subCols() { return state.structure?.subitemBoard?.columns ?? []; }
@@ -424,7 +428,10 @@ function subitemNamePicker(initValue) {
     else if (e.key === 'Enter' && shown[active]) { e.preventDefault(); pick(shown[active]); }
   });
 
-  const groupId = scopeGroupCombo ? scopeGroupCombo.value : '';
+  const scopeVal = scopeGroupCombo ? scopeGroupCombo.value : '';
+  // A board-wide rule has no single group to read subitem names from — the field
+  // stays free-text.
+  const groupId = scopeVal === ANY_GROUP ? '' : scopeVal;
   if (state.boardId && groupId) {
     input.placeholder = 'loading subitems…';
     fetch('/api/group-subitems?boardId=' + encodeURIComponent(state.boardId) + '&groupId=' + encodeURIComponent(groupId))
@@ -437,7 +444,7 @@ function subitemNamePicker(initValue) {
       })
       .catch(() => { input.placeholder = 'could not load subitems — type a name'; });
   } else {
-    input.placeholder = 'select a group first';
+    input.placeholder = scopeVal === ANY_GROUP ? 'type a subitem name' : 'select a group first';
   }
   return { node, serialize: () => input.value.trim() };
 }
@@ -750,9 +757,37 @@ const ACTIONS = [
   { value: 'email', label: 'Send email' },
   { value: 'set_column', label: 'Set a monday value (item/subitem)' },
   { value: 'post_update', label: 'Post an update (item/subitem)' },
+  { value: 'move_item_to_group', label: 'Move item to a group' },
   { value: 'clear_pending', label: 'Clear pending actions' },
   { value: 'clone_template_subitems', label: 'Clone template subitems' },
 ];
+
+/**
+ * Destination for "Move item to a group": a fixed group, or the group NAMED BY a
+ * column's value (a "Move To" status column whose labels are the group titles).
+ * The engine accepts a group id, a group title, or a template rendering to
+ * either, so both modes are the same saved field.
+ */
+function moveDestControls(init) {
+  const saved = init?.group || '';
+  const opts = [
+    { value: '', label: '— destination —' },
+    ...groupOptions(),
+    ...byType(boardCols(), ['status', 'color', 'dropdown', 'text']).map((c) => ({
+      value: `{{column.${c.id}}}`,
+      label: `↪ the group named in “${c.title}”`,
+    })),
+  ];
+  // A hand-written group title (or a column since removed) must stay selectable.
+  if (saved && !opts.some((o) => o.value === saved)) opts.push({ value: saved, label: saved });
+  const dest = combo(opts, { placeholder: '— destination —', value: saved });
+  const node = el('div', {}, [
+    el('label', { text: 'Move to' }),
+    dest.node,
+    el('span', { class: 'hint', text: 'Pick a fixed group, or a column whose value names the group. Matching is on the group title (case-insensitive) — a value that matches no group is logged and skipped, and an item already in the target group is left alone.' }),
+  ]);
+  return { node, serialize: () => ({ group: dest.value }) };
+}
 
 function setColumnControls(init) {
   let initSubitem = init?.subitemName;
@@ -1019,6 +1054,11 @@ function makeActionRow(init) {
       const sc = setColumnControls(i);
       params.append(when.node, sc.node);
       serializeParams = () => ({ when: when.serialize(), ...sc.serialize() });
+    } else if (t === 'move_item_to_group') {
+      const when = whenControl(i?.when);
+      const dest = moveDestControls(i);
+      params.append(when.node, dest.node);
+      serializeParams = () => ({ when: when.serialize(), ...dest.serialize() });
     } else if (t === 'post_update') {
       const when = whenControl(i?.when);
       const pu = postUpdateControls(i);
@@ -1099,7 +1139,7 @@ function generateRuleId() {
   const type = ($('triggerType') && $('triggerType').value) || 'rule';
   const groupId = scopeGroupCombo ? scopeGroupCombo.value : '';
   const title = state.structure?.board?.groups?.find((g) => g.id === groupId)?.title;
-  const groupSlug = title ? slugify(title) : '';
+  const groupSlug = groupId === ANY_GROUP ? 'any-group' : title ? slugify(title) : '';
   const existing = new Set(state.ruleset.rules.map((r) => r.id));
   const trigSlug = TRIGGER_SLUG[type] || slugify(type);
   let id;
@@ -1117,7 +1157,8 @@ function buildRule() {
   if (!groupId) throw new Error('Pick a group.');
   const rule = {
     id, enabled: $('ruleEnabled').checked, boardId: Number(state.boardId),
-    scope: { groupId }, trigger: triggerSerialize(), actions: actionRows.map((r) => r.serialize()),
+    scope: groupId === ANY_GROUP ? { allGroups: true } : { groupId },
+    trigger: triggerSerialize(), actions: actionRows.map((r) => r.serialize()),
   };
   const groups = conditionGroups
     .map((g) => ({ conditions: g.serialize().conditions }))
@@ -1154,6 +1195,7 @@ function renderRuleList() {
   }
   const groupTitle = (gid) =>
     state.structure?.board?.groups?.find((g) => g.id === gid)?.title || gid || '(no group)';
+  const scopeLabel = (r) => (r.scope?.allGroups ? 'Any group' : groupTitle(r.scope?.groupId));
   state.ruleset.rules.forEach((r, i) => {
     const enabled = r.enabled !== false;
     const trigLabel = TRIGGER_LABEL[r.trigger?.type] || r.trigger?.type || '(no trigger)';
@@ -1163,7 +1205,7 @@ function renderRuleList() {
     });
     const meta = el('div', {}, [
       el('div', {}, [badge, el('strong', { text: ' ' + r.id })]),
-      el('div', {}, [el('span', { class: 'hint', text: `${trigLabel} · ${groupTitle(r.scope?.groupId)} · ${(r.actions || []).length} action(s)` })]),
+      el('div', {}, [el('span', { class: 'hint', text: `${trigLabel} · ${scopeLabel(r)} · ${(r.actions || []).length} action(s)` })]),
     ]);
     const edit = el('button', { class: 'link', text: 'edit', onclick: () => loadRuleIntoBuilder(r) });
     const del = el('button', { class: 'danger', text: 'delete', onclick: () => deleteRule(i) });
@@ -1208,7 +1250,7 @@ function loadRuleIntoBuilder(rule) {
   showTab('rules');
   $('ruleId').value = rule.id || '';
   $('ruleEnabled').checked = rule.enabled !== false;
-  if (scopeGroupCombo) scopeGroupCombo.value = rule.scope?.groupId || '';
+  if (scopeGroupCombo) scopeGroupCombo.value = rule.scope?.allGroups ? ANY_GROUP : (rule.scope?.groupId || '');
 
   let trig = rule.trigger || {};
   if (trig.type === 'status_changed_to') trig = { type: 'item_column_changed', columnId: trig.columnId, value: trig.label };
@@ -1256,7 +1298,7 @@ async function loadBoard() {
     state.structure = await res.json();
     state.boardId = id;
     state.groupSubitemNames = null; // reset cached subitem-name suggestions for the new board
-    scopeGroupCombo = combo([{ value: '', label: '— select group —' }, ...groupOptions()], { placeholder: '— select group —', onChange: () => { state.groupSubitemNames = null; renderTriggerParams(); } });
+    scopeGroupCombo = combo([{ value: '', label: '— select group —' }, { value: ANY_GROUP, label: '★ Any group (board-wide)' }, ...groupOptions()], { placeholder: '— select group —', onChange: () => { state.groupSubitemNames = null; renderTriggerParams(); } });
     const mount = $('scopeGroupMount'); mount.innerHTML = ''; mount.appendChild(scopeGroupCombo.node);
     renderTriggerParams();
     $('builderCard').classList.remove('disabled');
@@ -1382,7 +1424,9 @@ function renderQueue() {
       ? `${(a.payload && a.payload.subject) || '(no subject)'} → ${((a.payload && a.payload.to) || []).join(', ')}`
       : a.actionType === 'set_column'
         ? `set ${(a.payload && a.payload.columnId) || ''} = ${(a.payload && a.payload.value) || ''}`
-        : ((a.payload && a.payload.text) || '').replace(/<[^>]+>/g, '').slice(0, 90);
+        : a.actionType === 'move_item_to_group'
+          ? `move to ${(a.payload && a.payload.group) || '(no group)'}`
+          : ((a.payload && a.payload.text) || '').replace(/<[^>]+>/g, '').slice(0, 90);
     const head = el('div', {}, [
       el('span', { class: 'badge ' + a.status, text: a.status }),
       el('strong', { text: ' ' + a.actionType }),

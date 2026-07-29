@@ -146,18 +146,43 @@ export interface PostUpdateAction {
   body: string;
 }
 
+/**
+ * Move the item to another group (monday `move_item_to_group`). `group` is a
+ * group id OR a group title, and supports `{{templating}}` — the intended use is
+ * a "Move To" status column whose labels are the group titles, i.e.
+ * `group: '{{column.color_xxx}}'`. The destination is resolved (and an
+ * already-there move skipped) at send time, so a scheduled move is never based
+ * on a stale snapshot. An unresolvable name is logged and skipped, not retried.
+ */
+export interface MoveToGroupAction {
+  type: 'move_item_to_group';
+  when: ActionWhen;
+  /** Group id, group title, or a template rendering to either. */
+  group: string;
+}
+
 export type Action =
   | EmailAction
   | SlackAction
   | ClearPendingAction
   | CloneTemplateSubitemsAction
   | SetColumnAction
-  | PostUpdateAction;
+  | PostUpdateAction
+  | MoveToGroupAction;
 
 // ── Rule ────────────────────────────────────────────────────────────────────
+/**
+ * Which items a rule applies to. Exactly one of these must be set. `allGroups`
+ * makes the rule board-wide — needed by rules that aren't about a group at all
+ * (e.g. "a Move To column changed", which can happen to an item anywhere), and
+ * by rules that would otherwise be duplicated per group (template cloning
+ * self-selects its template from the group title).
+ */
 export interface RuleScope {
   groupId?: string;
   groupTitleContains?: string;
+  /** Match items in ANY group on the board. */
+  allGroups?: boolean;
 }
 
 export interface Rule {

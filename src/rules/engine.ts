@@ -6,7 +6,14 @@ import type { NormalizedEvent } from '../events/types.js';
 import { hydrateItem, type Hydrator, type ItemContext, type SubitemSnapshot } from '../monday/hydrate.js';
 import { defaultSenders, type Senders } from '../senders/index.js';
 import { cloneTemplateSubitems, type Cloner } from '../monday/clone.js';
-import { setColumnValue, postItemUpdate, type ColumnWriter, type UpdateWriter } from '../monday/write.js';
+import {
+  setColumnValue,
+  postItemUpdate,
+  moveItemToGroup,
+  type ColumnWriter,
+  type UpdateWriter,
+  type GroupMover,
+} from '../monday/write.js';
 import type { EngineStore, QueuedActionType } from '../queue/types.js';
 import type { Action, ActionWhen, Condition, EmailAction, Rule, Trigger } from './types.js';
 
@@ -34,6 +41,7 @@ export interface EngineDeps {
   cloner?: Cloner;
   columnWriter?: ColumnWriter;
   updateWriter?: UpdateWriter;
+  groupMover?: GroupMover;
   /** Patient contact-consent gate. Defaults to the CONTACT_OPTOUT_* env vars;
    *  injectable so tests can configure it (env is read at module load). */
   contactOptOut?: ContactOptOutConfig;
@@ -89,6 +97,7 @@ export class RulesEngine {
   private readonly cloner: Cloner;
   private readonly columnWriter: ColumnWriter;
   private readonly updateWriter: UpdateWriter;
+  private readonly groupMover: GroupMover;
   private readonly contactOptOut: ContactOptOutConfig;
 
   constructor(deps: EngineDeps) {
@@ -99,6 +108,7 @@ export class RulesEngine {
     this.cloner = deps.cloner ?? cloneTemplateSubitems;
     this.columnWriter = deps.columnWriter ?? setColumnValue;
     this.updateWriter = deps.updateWriter ?? postItemUpdate;
+    this.groupMover = deps.groupMover ?? moveItemToGroup;
     this.contactOptOut = deps.contactOptOut ?? {
       columnId: env.contactOptOutColumnId,
       blockValue: env.contactOptOutBlockValue,
@@ -135,11 +145,16 @@ export class RulesEngine {
     const needHydrate = candidates.length > 0 || (!!this.store && event.kind === 'item_entered_group');
     if (!needHydrate) return result;
 
-    const item = await this.hydrate(itemId);
-    if (!item) {
+    const hydrated = await this.hydrate(itemId);
+    if (!hydrated) {
       log.warn(`Could not hydrate item ${itemId} for event ${event.kind}.`);
       return result;
     }
+    // Re-pointed when a clone creates subitems, so every LATER rule sees them too
+    // (see the rule loop). Without that, two rules cloning on the same event both
+    // read a pre-clone snapshot and the second one's "already applied" dedupe
+    // misses → duplicate subitems.
+    let item = hydrated;
 
     // Moving between groups counts as leaving the old one → clear its pending
     // actions BEFORE the rule loop enqueues the NEW group's scheduled actions.
@@ -181,9 +196,11 @@ export class RulesEngine {
           // Re-hydrate after a clone that created subitems so subsequent actions
           // in this rule operate on the fresh subitem list (fixes clone→set_column
           // in one rule, where the original snapshot predates the new subitems).
+          // Also re-point the shared `item`, so a later rule that clones sees the
+          // new subitems and correctly skips instead of cloning a second set.
           if (action.type === 'clone_template_subitems' && outcome === 'executed') {
             const fresh = await this.hydrate(curItem.id);
-            if (fresh) { curItem = fresh; ctx = buildContext(curItem, event); }
+            if (fresh) { curItem = fresh; item = fresh; ctx = buildContext(curItem, event); }
           }
         } catch (err) {
           result.failed++;
@@ -323,6 +340,16 @@ export class RulesEngine {
     } else if (actionType === 'post_update') {
       const p = payload as { itemId: number; body: string };
       await this.updateWriter(p);
+    } else if (actionType === 'move_item_to_group') {
+      const p = payload as { boardId: number; itemId: number; group: string };
+      // The mover resolves the destination (id or title) and skips a move to the
+      // group the item is already in — both at send time, never on a snapshot.
+      const res = await this.groupMover(p);
+      log.info(
+        res.moved
+          ? `[move] item ${p.itemId} → ${res.groupTitle} (${res.groupId}).`
+          : `[move] item ${p.itemId} not moved — ${res.reason}.`,
+      );
     } else {
       const p = payload as { webhookUrl: string; text: string };
       // Slack is gated too: a Slack post about a patient is still a notification
@@ -506,6 +533,13 @@ function renderAction(
     }
     return { actionType: 'post_update', payload: { itemId: item.id, body } };
   }
+  if (action.type === 'move_item_to_group') {
+    // Render only — resolving the name to a group id happens at send time.
+    return {
+      actionType: 'move_item_to_group',
+      payload: { boardId: item.boardId, itemId: item.id, group: renderTemplate(action.group, ctx) },
+    };
+  }
   throw new Error(`renderAction called with non-sendable action: ${(action as Action).type}`);
 }
 
@@ -685,12 +719,15 @@ function ruleScopeMatches(rule: Rule, item: ItemContext, event: NormalizedEvent)
       event.kind === 'item_left_group' ? event.fromGroupId
       : event.kind === 'item_entered_group' ? event.fromGroupId
       : undefined;
+    // Board-wide: any group the item left counts (a move always has a source).
+    if (rule.scope.allGroups) return !!leftGroup;
     return !!rule.scope.groupId && rule.scope.groupId === leftGroup;
   }
   return scopeMatches(rule, item);
 }
 
 function scopeMatches(rule: Rule, item: ItemContext): boolean {
+  if (rule.scope.allGroups) return true;
   if (rule.scope.groupId) return item.groupId === rule.scope.groupId;
   if (rule.scope.groupTitleContains) {
     return item.groupTitle.toLowerCase().includes(rule.scope.groupTitleContains.toLowerCase());

@@ -110,11 +110,12 @@ debugging CLI `npm run webhooks -- [list|register|delete]` (`src/scripts/webhook
     webhook's URL, so reconcile **deletes + recreates** managed-event hooks at the current URL.
   - URL = `<PUBLIC_URL or derived-from-request>/webhook?secret=<WEBHOOK_SHARED_SECRET>`. The CLI
     needs `PUBLIC_URL`; the UI button derives the origin from request headers if `PUBLIC_URL` unset.
-  - Live-verified read path: prod board `18403436566` already has 3 of the 4 managed events
-    (`create_item`, `item_moved_to_any_group`, `change_subitem_column_value`) from earlier project
-    testing — these are pre-existing, NOT created by this feature; only `change_column_value` is
-    missing. **Registration not yet run on prod** (localhost can't register — must register from the
-    deployed HTTPS URL).
+  - **Prod board `18403436566` is fully connected (verified 2026-07-29 via `npm run webhooks --
+    list`):** all four managed events are registered — `create_item` (595416878),
+    `item_moved_to_any_group` (595416912), `change_column_value` (595416934),
+    `change_subitem_column_value` (595416954). (An earlier note here said `change_column_value` was
+    missing; it has since been registered.) Registration itself still has to be run from the
+    deployed HTTPS URL — localhost can't register.
 
 **Configurator UX additions (2026-06-17):**
   - **Scheduled-actions (queue) management** — `GET /api/queue`, `POST /api/queue/:id/run` (dispatch
@@ -457,7 +458,72 @@ store the human `detail`, so no migration). `EngineDeps.emailOptOut` → `contac
   - `test:polish` +8 (28→36): slack suppressed / allowed / empty-flag / channel-not-gated, immediate
     counts, queued slack suppressed at send time with a terminal reason.
 
-**All offline suites pass: `npm test` → 177 checks (ingress 10, engine 71, queue 32, polish 36,
+**Board-wide scope + `move_item_to_group` action (2026-07-29):** the client wanted a **"Move To"**
+status column (labels = group titles) that moves an item when a group is picked. No new trigger was
+needed — `item_column_changed` already covers any column — but two things were missing: a way to
+scope a rule to the whole board, and any ability to move an item.
+  - **`scope.allGroups`** (`RuleScope`, `src/rules/types.ts`): `scopeMatches` returns true,
+    `ruleScopeMatches` treats it as "any group left" for `item_left_group`, the loader accepts it
+    (`scope must set groupId, groupTitleContains or allGroups`), and the configurator's scope combo
+    gained a **★ Any group (board-wide)** option (`ANY_GROUP` sentinel in `web/app.js`, mapped to
+    `{allGroups:true}` in `buildRule`, reverse-mapped on edit, shown as "Any group" in the rule list;
+    the subitem-name picker degrades to free text since there's no single group to read names from).
+    Every existing rule still names a group, so nothing changed for them.
+  - **`move_item_to_group` action** (`MoveToGroupAction`; `moveItemToGroup`/`GroupMover` in
+    `src/monday/write.ts`, injectable on the engine like `columnWriter`): `group` accepts a group id,
+    a group **title**, or a template — the intended value is `{{column.<moveToColumnId>}}`. Added to
+    `QueuedActionType`, so a delayed move queues like anything else. **Resolution and the
+    already-in-that-group guard happen at SEND time**, in one round-trip that reads the board's
+    groups and the item's current group together (`MOVE_LOOKUP`), so a scheduled move never acts on
+    a stale snapshot. An unresolvable name returns `{moved:false, reason}` + logs — it never throws
+    (a bad group name won't fix itself on retry) and never re-fires a group's entry rules by moving
+    an item to where it already is. UI: `moveDestControls` — a combo of the board's groups plus
+    "↪ the group named in “<column>”" for each status/dropdown/text column.
+  - **`set_column` may now be empty** (`src/rules/loader.ts`): an empty value CLEARS the column,
+    which the Move To rule needs (see below). Previously the loader rejected it outright.
+  - **The rule** (in `config/rules.json` as `any-group-move-to-column`, **disabled** until the
+    client builds the Status column): scope Any group · trigger `item_column_changed` on Move To
+    (any change) · condition **Move To has any value** · actions ① move to `{{column.…}}` ② set
+    Move To = ''. The reset makes the column behave like a button — monday emits no event when a
+    column is re-set to the value it already holds, so without it you can't send an item to the
+    same group twice — and the condition is what stops the reset from re-entering the rule.
+    It points at **`color_mm5qym00`** — the Status column created on 2026-07-29 (see §5), which
+    replaced the old empty dropdown (since deleted). Enable the rule in the configurator once the
+    deployed instance has it.
+
+**Clone rules collapsed 8 → 1 (2026-07-29):** the 8 pure-clone rules were byte-identical apart from
+`scope.groupId`, because `clone_template_subitems` already self-selects its template (the Templates
+item whose **name appears in the group title**) and no-ops when there's no match — the per-group
+scope was never doing the choosing. Replaced by one `any-group-clone-templates` rule (scope
+`allGroups`); `config/rules.json` went 32 → 26 rules. The `np-intake-…-8hr97` rule keeps its own
+clone action (it has email/set_column/slack attached and its subitem `set_column` depends on the
+clone landing first).
+  - **Engine fix this required:** the post-clone re-hydration was a *per-rule* working copy
+    (`let curItem = item`), so with two clone rules matching one event the second saw a **pre-clone**
+    snapshot, `templateAlreadyApplied` read stale, and it cloned a **second set of subitems**. The
+    refresh now also re-points the shared `item` (`engine.ts:186`), so whichever rule clones first
+    wins and the other correctly skips — order-independent.
+  - **Behavior change to be aware of:** board-wide cloning now also covers 4 groups that had no
+    clone rule but DO have a matching template — **New HPSM** (template `HPSM`), **Calling PCP**,
+    **Sample Forms for surgery coordination**, **CPMC Billing Issue Scripting**. Verified by running
+    the real matcher against the live board: 13 of 14 non-Templates groups match a template;
+    **Unscheduled Intake** matches none and stays a no-op. Narrowing this again would need a
+    "group is not X" condition (doesn't exist) — the cheap alternative is to rename or remove those
+    template items.
+  - Template names must stay specific: matching is substring + first-match-wins, so a template named
+    `Intake` would match both *NP Intake* and *Unscheduled Intake*.
+  - Verified live (read-only, no mutation): group resolution by title, by id, with sloppy
+    casing/whitespace, unknown name, and empty all behave as designed against board `18403436566`;
+    the real `move_item_to_group` **mutation is not yet exercised live** — the board's webhooks point
+    at the deployed service, so a test move would fire its rules. First real move is the client's.
+  - Configurator round-trip verified in a real browser: the saved rule loads into the builder
+    (Any group + destination + reset), re-serializes byte-identically, and PUTs successfully.
+  - `test:engine` +12 (71→83): board-wide scope matching items in two different groups, destination
+    from a column value, the reset write, the no-self-retrigger condition, a group-scoped rule still
+    ignoring other groups, delayed move queueing with the destination rendered at event time, and
+    the two-clone-rules dedupe.
+
+**All offline suites pass: `npm test` → 189 checks (ingress 10, engine 83, queue 32, polish 36,
 cutover 9, admin 7, exchange 12).**
 
 **Configurator:** run `npm run dev` (or `npm start`) and open `http://localhost:<PORT>/`. If
@@ -552,6 +618,10 @@ timed reminder self-skips once its condition stops holding — no cancel rule re
   (so a delayed Slack + a status flip can fire together) and `{{templating}}` on the value. The
   free-text value is authored in the rich editor (supports `{{vars}}` + if/else) and HTML is
   flattened to **plain text** on write — used to stash a generated message in a column for manual reuse.
+- `move_item_to_group` — move the item to another group (monday `move_item_to_group`). The
+  destination is a group id, a group **title**, or a template (`{{column.<id>}}` — a "Move To"
+  column whose labels are group titles); it is resolved at **send time**, an unknown name is logged
+  and skipped, and a move to the group the item is already in is a no-op. Supports `when`.
 - `post_update` — post an item **Update** (monday `create_update`): item or a named subitem; rich HTML
   body posted **verbatim** (not flattened) with no long_text ~2000-char cap; supports `when` scheduling
   and `{{templating}}`. Use this (not `set_column`) to stash a long email a human reads/copies.
@@ -565,6 +635,13 @@ plus block conditionals: `{{#if path}}…{{else}}…{{/if}}`, `{{#unless path}}�
 `{{#ifEquals path "value"}}…{{/ifEquals}}` (case-insensitive), nestable — and a named-subitem scope
 block `{{#subitem "Exact Name"}}…{{/subitem}}` (inside it `{{name}}`/`{{column.<id>}}`/conditionals
 refer to that subitem; lets one message describe several subitems) — see `src/util/template.ts`.
+
+### Rule scope
+Every rule names either one group (`scope.groupId`), a title substring (`groupTitleContains`), or
+**the whole board** (`scope.allGroups` — "★ Any group" in the configurator). Board-wide is for rules
+that aren't about a group at all (a Move To column changing, which can happen to an item anywhere)
+and for rules that would otherwise be duplicated per group (template cloning, which picks its
+template from the group title).
 
 ### Behavioral defaults (decided)
 1. **N-days** = calendar days, counted from when the item **entered the group** (not creation).
@@ -625,7 +702,14 @@ _From `npm run discover` on 2026-06-11. Use these IDs when authoring rules / fix
   `group_mm1qxgcp`→On Lok, `group_mm1qzc41`→Calling PCP, plus several office/hospital/post-surgery
   groups. (Re-run `npm run discover` for the full current list.)
 - Other notable columns: `date4` (Date), `date_mm2wzc0w` (Last Contacted), `date_mm2w90et`
-  (Next Action Date), `color_mm2wt4td` (Lead Status), `dropdown_mm2wc8hh` (Move To).
+  (Next Action Date), `color_mm2wt4td` (Lead Status).
+- **Move To column:** `color_mm5qym00` ("Move To", type `status`) — **created 2026-07-29 by us via
+  the API**. Its 14 labels are the live group titles verbatim (every group except **Templates**),
+  index 1–14 in board order; this is what the `any-group-move-to-column` rule reads. monday cannot
+  change a column's type, so this is a NEW column; the old empty `dropdown_mm2wc8hh` (no labels, no
+  values on any of the 75 items) was **deleted by the client on 2026-07-29** and no longer exists.
+  **If a group is added/renamed later, add/rename the matching label** — the rule matches on title
+  text.
 - **Email-bearing columns** (recipient sources): `email_mm5az59s` (Patient Email, type `email` —
   added 2026-07), `text_mm2wm34h` (Referring Provider Email, type `text`).
 - **Contact opt-out column:** `color_mm5e9gs2` ("Email Allowed", type `status`) — created 2026-07-20.

@@ -57,6 +57,7 @@ conditions are AND within a group; add a **"+ OR group"** for OR-of-ANDs.
 | **Set a monday value (item/subitem)** | writes a column on the item or a named subitem |
 | **Clear pending actions** | cancels queued actions — **All**, or **Only specific rules** |
 | **Clone template subitems** | copies the matching Templates item's subitems onto the item |
+| **Move item to a group** | moves the item — to a fixed group, or to the group named by a column's value |
 
 ### Timing (the `when` on each action)
 
@@ -162,11 +163,32 @@ Status → Unscheduled → email now, Slack at 48h, email at 120h. Stops if stat
 - **Trigger:** Item column changed to → Column **Status** → Fires on **A specific value** → **Scheduled** · **Scope:** NP Intake
 - **Action:** Clear pending actions → **Only specific rules → Rule 3a** (leaves Rules 2 & 5 untouched).
 
-### Rule 4 — Clone templates on entry (per group)
-Enter the group → clone its template subitems.
+### Rule 4 — Clone templates on entry (one rule, board-wide)
+Enter any group → clone that group's template subitems.
 
-- **Trigger:** Item entered the group · **Scope:** the group · **Action:** Clone template subitems
-- One rule per group (no "all groups"). Cloning acts only where a matching Templates item exists.
+- **Trigger:** Item entered the group · **Scope:** **★ Any group (board-wide)** · **Action:** Clone
+  template subitems
+- One rule covers every group. The action picks the template itself — the Templates item whose
+  **name appears in the group title** — and does nothing in a group with no matching template, so
+  a board-wide scope is safe. Adding a group later needs a **template item**, not a new rule.
+- Keep template names specific: matching is "template name appears in group title", first match
+  wins, so a template called `Intake` would match both *NP Intake* and *Unscheduled Intake*.
+
+### Rule 4b — "Move To" column moves the item
+Pick a group in the **Move To** column → the item moves there.
+
+- **Trigger:** Item column changed → **Move To** → Fires on **any change** · **Scope:** **★ Any group**
+- **Condition:** Item column → **Move To** → **has any value**
+- **Actions:** ① Move item to a group → **↪ the group named in "Move To"** `immediately` ·
+  ② Set a monday value → Item → **Move To** = *(empty)* `immediately`
+- The **Move To** labels must match the group titles exactly (matching ignores case and stray
+  spaces). A label matching no group is logged and skipped; an item already in the target group
+  is left alone.
+- **Why blank the column afterwards:** monday sends no event when a column is re-set to the value
+  it already holds, so without the reset you could never send an item to the same group twice.
+  The `has any value` condition is what stops that reset from re-entering the rule.
+- The move behaves exactly like dragging the item: the destination's entry rules fire (cloning,
+  entry emails) and the item's pending scheduled actions clear.
 
 ### Rule 5 — Stale in bucket → cool-down + archive nudge (per bucket)
 In a bucket > 1 month → set Lead Status and Slack the coordinator to archive.
@@ -209,4 +231,6 @@ In a bucket > 1 month → set Lead Status and Slack the coordinator to archive.
   needs no rule. For in-place changes, prefer a **condition on the timed rule** (self-skip)
   and use **Clear pending → specific rules** only when a *different* event should stop a
   chain.
-- **Cloning (Rule 4)** — don't add two clone rules for the same group.
+- **Cloning (Rule 4)** — one board-wide rule now covers every group; don't add a second clone rule
+  for a group it already covers. (If two clone rules do overlap, the second one detects the
+  already-cloned subitems and skips, so you get one set — but it's still noise.)

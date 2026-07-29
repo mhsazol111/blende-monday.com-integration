@@ -79,8 +79,8 @@ export function validateRule(r: Rule): string | null {
   if (r.trigger.type === 'item_column_changed' && !(r.trigger as any).columnId) {
     return 'item_column_changed needs columnId';
   }
-  if (!r.scope || (!r.scope.groupId && !r.scope.groupTitleContains)) {
-    return 'scope must set groupId or groupTitleContains';
+  if (!r.scope || (!r.scope.groupId && !r.scope.groupTitleContains && !r.scope.allGroups)) {
+    return 'scope must set groupId, groupTitleContains or allGroups';
   }
   if (r.conditionGroups !== undefined) {
     if (!Array.isArray(r.conditionGroups)) return 'conditionGroups must be an array';
@@ -108,11 +108,16 @@ function validateAction(a: Rule['actions'][number]): string | null {
     if (!a.templateSourceColumnId) return 'clone action missing templateSourceColumnId';
   } else if (a.type === 'set_column') {
     if (!a.columnId) return 'set_column action missing columnId';
-    if (!a.value?.trim()) return 'set_column action has empty value';
+    // An empty string is a legitimate value: it CLEARS the column (used by the
+    // "Move To" rule to reset the column after acting on it). Only a missing
+    // value is invalid.
+    if (typeof a.value !== 'string') return 'set_column action has no value';
     if (a.target === 'subitem' && !a.subitemName?.trim()) return 'set_column on a subitem needs subitemName';
   } else if (a.type === 'post_update') {
     if (!a.body?.trim()) return 'post_update action has empty body';
     if (a.target === 'subitem' && !a.subitemName?.trim()) return 'post_update on a subitem needs subitemName';
+  } else if (a.type === 'move_item_to_group') {
+    if (!a.group?.trim()) return 'move_item_to_group action has no destination group';
   } else if (a.type === 'clear_pending') {
     if (a.scope === 'rules' && (!Array.isArray(a.ruleIds) || a.ruleIds.length === 0)) {
       return 'clear_pending scope=rules needs a non-empty ruleIds list';

@@ -773,6 +773,131 @@ async function main() {
     check('unknown rule id → fire', (await mk('Done').shouldFireQueued('nope', 100)) === true);
   }
 
+  // 21) board-wide scope (`allGroups`) + the move_item_to_group action.
+  {
+    const MOVE_COL = 'color_moveto';
+    const itemIn = (groupId: string, groupTitle: string, moveTo: string) =>
+      makeItem({
+        groupId,
+        groupTitle,
+        columns: {
+          status: { text: 'Working on it', value: null, type: 'color' },
+          [MOVE_COL]: { text: moveTo, value: null, type: 'color' },
+        },
+      });
+
+    const moveRule: Rule = {
+      id: 'move-to',
+      enabled: true,
+      boardId: BOARD,
+      scope: { allGroups: true },
+      trigger: { type: 'item_column_changed', columnId: MOVE_COL },
+      conditions: [{ type: 'column_not_empty', columnId: MOVE_COL }],
+      actions: [
+        { type: 'move_item_to_group', when: { mode: 'immediate' }, group: `{{column.${MOVE_COL}}}` },
+        { type: 'set_column', when: { mode: 'immediate' }, columnId: MOVE_COL, value: '' },
+      ],
+    };
+    const colChanged = (columnId: string): NormalizedEvent => ({
+      kind: 'column_changed', boardId: BOARD, itemId: 100, columnId, value: null, raw: {},
+    });
+
+    /** Run the move rule for an item sitting in `groupId` with `moveTo` selected. */
+    const run = async (groupId: string, groupTitle: string, moveTo: string) => {
+      const moves: { group: string; itemId: number }[] = [];
+      const writes: { columnId: string; value: string }[] = [];
+      const engine = new RulesEngine({
+        rules: [moveRule],
+        senders: { async sendEmail() {}, async sendSlack() {} },
+        hydrate: async () => itemIn(groupId, groupTitle, moveTo),
+        groupMover: async (a) => { moves.push({ group: a.group, itemId: a.itemId }); return { moved: true, groupId: 'g', groupTitle: a.group }; },
+        columnWriter: async (a) => { writes.push({ columnId: a.columnId, value: a.value }); },
+      });
+      const res = await engine.handleEvent(colChanged(MOVE_COL));
+      return { res, moves, writes };
+    };
+
+    // The rule is board-wide: the same rule fires for items in different groups.
+    const a = await run(GROUP, 'NP Consultation', 'New HPSM');
+    check('allGroups scope matches an item in one group', a.res.matched === 1);
+    check('move action passes the column value as the destination', a.moves[0]?.group === 'New HPSM');
+    const b = await run('group_other', 'Elsewhere', 'Hospital - CPMC');
+    check('allGroups scope matches an item in a different group', b.res.matched === 1);
+    check('destination follows the item’s own column value', b.moves[0]?.group === 'Hospital - CPMC');
+    check('Move To is blanked after the move', b.writes[0]?.columnId === MOVE_COL && b.writes[0]?.value === '');
+
+    // The condition is what stops the blanking write from re-entering the rule.
+    const empty = await run(GROUP, 'NP Consultation', '');
+    check('empty Move To → rule does not fire (no self-retrigger)', empty.res.matched === 0 && empty.moves.length === 0);
+
+    // A scoped rule still only fires for its own group (no regression).
+    {
+      const scoped: Rule = { ...moveRule, id: 'move-scoped', scope: { groupId: GROUP } };
+      const engine = new RulesEngine({
+        rules: [scoped],
+        senders: { async sendEmail() {}, async sendSlack() {} },
+        hydrate: async () => itemIn('group_other', 'Elsewhere', 'New HPSM'),
+        groupMover: async () => ({ moved: true }),
+      });
+      check('group-scoped rule ignores items in other groups', (await engine.handleEvent(colChanged(MOVE_COL))).matched === 0);
+    }
+
+    // Scheduled move: enqueued with the destination rendered at event time.
+    {
+      const queued: QueueEntry[] = [];
+      const store = {
+        enqueue: (e: QueueEntry) => { queued.push(e); return 1; },
+        cancelPendingForItem: () => 0,
+        recordItemEntry: () => {},
+        getItemEntry: () => undefined,
+        clearItemEntry: () => {},
+      } as unknown as EngineStore;
+      const engine = new RulesEngine({
+        rules: [{ ...moveRule, id: 'move-later', actions: [{ type: 'move_item_to_group', when: { mode: 'relative', hours: 2 }, group: `{{column.${MOVE_COL}}}` }] }],
+        senders: { async sendEmail() {}, async sendSlack() {} },
+        store,
+        hydrate: async () => itemIn(GROUP, 'NP Consultation', 'On Lok'),
+      });
+      await engine.handleEvent(colChanged(MOVE_COL));
+      check('delayed move is queued as move_item_to_group', queued[0]?.actionType === 'move_item_to_group');
+      check('queued move payload carries the rendered destination', (queued[0]?.payload as any)?.group === 'On Lok');
+    }
+  }
+
+  // 22) a clone in one rule is visible to LATER rules on the same event, so a
+  // second clone rule dedupes instead of cloning a second set of subitems.
+  {
+    const cloneAction = { type: 'clone_template_subitems', templatesGroupTitle: 'Templates', templateSourceColumnId: 'text_src' } as const;
+    const rules: Rule[] = [
+      { id: 'clone-scoped', enabled: true, boardId: BOARD, scope: { groupId: GROUP }, trigger: { type: 'item_entered_group' }, actions: [{ ...cloneAction }] },
+      { id: 'clone-any', enabled: true, boardId: BOARD, scope: { allGroups: true }, trigger: { type: 'item_entered_group' }, actions: [{ ...cloneAction }] },
+    ];
+    const bare = makeItem();
+    const cloned = makeItem({
+      subitems: [{ id: 7, boardId: 1, name: 'Task', columns: { text_src: { text: 'NP Consultation', value: null, type: 'text' } } }],
+    });
+    let hydrateCalls = 0;
+    let cloneCalls = 0;
+    const engine = new RulesEngine({
+      rules,
+      senders: { async sendEmail() {}, async sendSlack() {} },
+      // First hydrate = pre-clone; every later hydrate returns the cloned state.
+      hydrate: async () => (hydrateCalls++ === 0 ? bare : cloned),
+      cloner: async (item) => {
+        cloneCalls++;
+        // Mirrors the real cloner's dedupe: skip when a subitem is already stamped.
+        const applied = item.subitems.some((s) => s.columns['text_src']?.text === 'NP Consultation');
+        return applied ? { action: 'skipped', reason: 'template already applied' } : { action: 'created', created: 3 };
+      },
+    });
+    const r = await engine.handleEvent(entered(100));
+    check('both clone rules match', r.matched === 2);
+    check('cloner ran for both rules', cloneCalls === 2);
+    // 'skipped' isn't counted in HandleResult, so exactly one executed clone
+    // means the second rule deduped rather than cloning again.
+    check('second clone rule sees the fresh subitems and skips', r.executed === 1);
+  }
+
   console.log(`\n${passed} checks passed.`);
 }
 

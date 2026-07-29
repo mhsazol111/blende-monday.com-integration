@@ -3,7 +3,7 @@
  * SQLite directly) so it stays testable with an in-memory/mock store.
  */
 
-export type QueuedActionType = 'email' | 'slack' | 'set_column' | 'post_update';
+export type QueuedActionType = 'email' | 'slack' | 'set_column' | 'post_update' | 'move_item_to_group';
 /**
  * `suppressed` = deliberately not delivered (today: the recipient is opted out of
  * email). Terminal like `sent` — never retried — but distinct so the UI can say
