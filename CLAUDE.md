@@ -481,8 +481,9 @@ scope a rule to the whole board, and any ability to move an item.
     "↪ the group named in “<column>”" for each status/dropdown/text column.
   - **`set_column` may now be empty** (`src/rules/loader.ts`): an empty value CLEARS the column,
     which the Move To rule needs (see below). Previously the loader rejected it outright.
-  - **The rule** (in `config/rules.json` as `any-group-move-to-column`, **disabled** until the
-    client builds the Status column): scope Any group · trigger `item_column_changed` on Move To
+  - **The rule** (in `config/rules.json` as
+    `all-groups--on-move-to-change--move-item-then-clear-column`; renamed 2026-08-01, see §12 —
+    it is now **enabled**): scope Any group · trigger `item_column_changed` on Move To
     (any change) · condition **Move To has any value** · actions ① move to `{{column.…}}` ② set
     Move To = ''. The reset makes the column behave like a button — monday emits no event when a
     column is re-set to the value it already holds, so without it you can't send an item to the
@@ -494,8 +495,9 @@ scope a rule to the whole board, and any ability to move an item.
 **Clone rules collapsed 8 → 1 (2026-07-29):** the 8 pure-clone rules were byte-identical apart from
 `scope.groupId`, because `clone_template_subitems` already self-selects its template (the Templates
 item whose **name appears in the group title**) and no-ops when there's no match — the per-group
-scope was never doing the choosing. Replaced by one `any-group-clone-templates` rule (scope
-`allGroups`); `config/rules.json` went 32 → 26 rules. The `np-intake-…-8hr97` rule keeps its own
+scope was never doing the choosing. Replaced by one `all-groups--on-item-enter--clone-template-subitems`
+rule (scope `allGroups`; renamed 2026-08-01, see §12); `config/rules.json` went 32 → 26 rules. The
+`np-intake--on-item-enter--consult-invite-plus-48h-xray-nudge` rule keeps its own
 clone action (it has email/set_column/slack attached and its subitem `set_column` depends on the
 clone landing first).
   - **Engine fix this required:** the post-clone re-hydration was a *per-rule* working copy
@@ -705,7 +707,8 @@ _From `npm run discover` on 2026-06-11. Use these IDs when authoring rules / fix
   (Next Action Date), `color_mm2wt4td` (Lead Status).
 - **Move To column:** `color_mm5qym00` ("Move To", type `status`) — **created 2026-07-29 by us via
   the API**. Its 14 labels are the live group titles verbatim (every group except **Templates**),
-  index 1–14 in board order; this is what the `any-group-move-to-column` rule reads. monday cannot
+  index 1–14 in board order; this is what the
+  `all-groups--on-move-to-change--move-item-then-clear-column` rule reads. monday cannot
   change a column's type, so this is a NEW column; the old empty `dropdown_mm2wc8hh` (no labels, no
   values on any of the 75 items) was **deleted by the client on 2026-07-29** and no longer exists.
   **If a group is added/renamed later, add/rename the matching label** — the rule matches on title
@@ -867,3 +870,68 @@ webhook ingress, and runs the scheduler in-process.
 **Notes:** the worker loop starts with the server (no external cron). `/api/last-events` is a debug
 route currently open — gate or remove for production. The in-image `RULES_PATH`/`DATABASE_PATH` point
 at the volume, so the bundled `config/rules.json` is NOT used in the container.
+
+---
+
+## 12. Rule ID naming convention (2026-08-01)
+
+Generated IDs were `{group-slug}-{trigger}-{random}` (e.g. `np-intake-item_column_changed-h2bd2`),
+which said nothing about what a rule *does* — you had to open each one to find out. All 26 live
+rules were renamed to a **self-describing** convention:
+
+> `{group}--{when}--{what}`
+
+Three `--`-separated parts, kebab-case inside each. The group comes first so related rules sort
+together in the configurator list. Examples:
+
+- `np-intake--on-status-stuck--reschedule-plus-48h-72h-followup`
+- `hospital-cpmc--after-31d--lead-cool-plus-archive-alert`
+- `post-surgery--on-second-visit-done--recall-slack-after-delay`
+
+**IDs are opaque to the engine** — `boardId` / `scope` / `trigger` do all the matching, so renaming
+is behaviour-neutral. Two things DO read them, and both were updated together:
+
+1. **`clear_pending` with `scope:'rules'`** stores `ruleIds[]` *inside* rules.json — 2 references were
+   rewritten (NP Intake scheduled-cancel, NP Consultation treatment-plan-signed-cancel).
+2. **`queued_actions.rule_id`** in SQLite. Rows queued under an OLD id still **fire** —
+   `shouldFireQueued` returns `true` when the id is not found (`engine.ts:388`), so nothing is
+   silently dropped. The one in-flight gap: a scoped `clear_pending` will not match pre-rename
+   rows, so an already-queued action can outlive its cancel. Drain the queue before deploying, or
+   accept a short overlap.
+
+When adding a rule, keep the convention — the configurator Generate button still emits the old
+random form (`generateRuleId()`, `web/app.js`), so rename it by hand.
+
+### Mapping (old → new)
+
+| old | new |
+|---|---|
+| `any-group-clone-templates` | `all-groups--on-item-enter--clone-template-subitems` |
+| `any-group-move-to-column` | `all-groups--on-move-to-change--move-item-then-clear-column` |
+| `unscheduled-intake-item_entered_group-cpxpf` | `unscheduled-intake--on-item-enter--thanks-plus-48h-72h-followup` |
+| `np-intake-item_entered_group-8hr97` | `np-intake--on-item-enter--consult-invite-plus-48h-xray-nudge` |
+| `np-intake-item_column_changed-h2bd2` | `np-intake--on-status-stuck--reschedule-plus-48h-72h-followup` |
+| `np-intake-item_column_changed-nv7s0` | `np-intake--on-status-scheduled--cancel-stuck-followups` |
+| `np-intake-item_in_group_for_days-tw6ry` | `np-intake--after-31d--lead-cool-plus-archive-alert` |
+| `in-office-w-halsey-item_in_group_for_days-uzoap` | `in-office-halsey--after-31d--lead-cool-plus-archive-alert` |
+| `in-office-w-lee-item_in_group_for_days-0l2z7` | `in-office-lee--after-31d--lead-cool-plus-archive-alert` |
+| `in-office-w-vu-item_in_group_for_days-mkv1r` | `in-office-vu--after-31d--lead-cool-plus-archive-alert` |
+| `hospital-cpmc-item_in_group_for_days-ms4nu` | `hospital-cpmc--after-31d--lead-cool-plus-archive-alert` |
+| `hospital-kaiser-item_in_group_for_days-dxakh` | `hospital-kaiser--after-31d--lead-cool-plus-archive-alert` |
+| `post-surgery-item_in_group_for_days-ibiww` | `post-surgery--after-31d--lead-cool-plus-archive-alert` |
+| `np-consultation-item_in_group_for_days-49hae` | `np-consultation--after-7d--missing-docs-email-plus-1w-3w-alerts` |
+| `np-consultation-subitem-set-ah2cu` | `np-consultation--on-treatment-plan-signed--cancel-missing-docs-chase` |
+| `in-office-w-halsey-in-group-days-1p7er` | `in-office-halsey--after-7d--missing-docs-update-plus-1w-3w-alerts` |
+| `in-office-w-lee-in-group-days-wccbz` | `in-office-lee--after-7d--missing-docs-update-plus-1w-3w-alerts` |
+| `in-office-w-vu-in-group-days-ehx6e` | `in-office-vu--after-7d--missing-docs-update-plus-1w-3w-alerts` |
+| `hospital-cpmc-in-group-days-yxscu` | `hospital-cpmc--after-7d--missing-docs-update-plus-1w-3w-alerts` |
+| `hospital-kaiser-in-group-days-2mi4x` | `hospital-kaiser--after-7d--missing-docs-update-plus-1w-3w-alerts` |
+| `in-office-w-halsey-subitem-set-vpa9s` | `in-office-halsey--on-welcome-email-done--surgery-outline-update` |
+| `in-office-w-lee-subitem-set-kbhoz` | `in-office-lee--on-welcome-email-done--surgery-outline-update` |
+| `in-office-w-vu-subitem-set-p3zvm` | `in-office-vu--on-welcome-email-done--surgery-outline-update` |
+| `hospital-cpmc-subitem-set-6gowk` | `hospital-cpmc--on-welcome-email-done--surgery-outline-update` |
+| `hospital-kaiser-subitem-set-hagpy` | `hospital-kaiser--on-welcome-email-done--surgery-outline-update` |
+| `post-surgery-subitem-set-wnzr6` | `post-surgery--on-second-visit-done--recall-slack-after-delay` |
+
+The rename was a one-shot script (not committed). `config/rules.live.json` is an untracked snapshot
+of the **pre-rename** live ruleset, and `config/rules.json.bak` the local pre-rename backup.

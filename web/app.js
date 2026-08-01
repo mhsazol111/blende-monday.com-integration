@@ -1271,7 +1271,8 @@ function loadRuleIntoBuilder(rule) {
   (rule.actions || []).forEach((a) => { const row = makeActionRow(a); actionRows.push(row); $('actions').appendChild(row.node); });
   renumberActions();
 
-  $('builderCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  // No scrollIntoView here: the builder sits alongside the rule list, so scrolling
+  // to it just moved the list out from under the cursor. The toast is the feedback.
   toast(`Editing "${rule.id}" — change fields, then Save rule (same ID overwrites).`, 'ok');
 }
 
