@@ -11,6 +11,7 @@ import {
   buildWebhookUrl,
   WEBHOOK_EVENTS,
 } from '../monday/webhooks.js';
+import { adminAuthorized } from './auth.js';
 import { saveRules, validateRuleset } from '../rules/loader.js';
 import type { RulesEngine } from '../rules/engine.js';
 import type { Rule } from '../rules/types.js';
@@ -26,12 +27,9 @@ import type { Store } from '../queue/types.js';
 
 const WEB_DIR = resolve('web');
 
-function adminAuthorized(req: { query: unknown; headers: Record<string, unknown> }): boolean {
-  const expected = env.webhookSharedSecret;
-  if (!expected) return true; // no secret configured → open (dev)
-  const fromQuery = (req.query as { secret?: string } | undefined)?.secret;
-  return fromQuery === expected || req.headers['x-webhook-secret'] === expected;
-}
+// Write routes keep an explicit gate even though the global Basic Auth hook
+// (web/auth.ts) already ran — it's the same predicate, so this is now a
+// belt-and-braces check that survives someone carving a path out of the hook.
 
 /**
  * The public origin monday should call. Prefer the configured PUBLIC_URL;

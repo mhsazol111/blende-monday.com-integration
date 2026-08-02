@@ -10,6 +10,10 @@ function optional(name: string, fallback = ''): string {
   return process.env[name]?.trim() || fallback;
 }
 
+/** The out-of-the-box configurator password. Exported so the boot warning can
+ *  detect that it was never changed. */
+export const DEFAULT_ADMIN_PASSWORD = 'admin';
+
 /** Read a required variable, throwing a clear error if it is missing. */
 export function required(name: string): string {
   const value = process.env[name]?.trim();
@@ -47,6 +51,13 @@ export const env = {
    *  Used to build the webhook registration URL. If unset, the admin API derives
    *  it from the incoming request's host/proto headers. */
   publicUrl: optional('PUBLIC_URL'),
+
+  // configurator (admin UI + API) HTTP Basic Auth. Defaults to admin/admin so a
+  // deploy is never accidentally left open — the failure mode of the older
+  // "unset ⇒ allow" convention. startServer warns loudly while the default
+  // password is still in use.
+  adminUser: optional('ADMIN_USER', 'admin'),
+  adminPassword: optional('ADMIN_PASSWORD', DEFAULT_ADMIN_PASSWORD),
 
   // persistence
   databasePath: optional('DATABASE_PATH', './data/automation.sqlite'),

@@ -1,5 +1,5 @@
 import Fastify, { type FastifyInstance } from 'fastify';
-import { env } from './config/env.js';
+import { env, DEFAULT_ADMIN_PASSWORD } from './config/env.js';
 import { log } from './util/logger.js';
 import { normalizeEvent } from './monday/normalizer.js';
 import { RulesEngine } from './rules/engine.js';
@@ -7,6 +7,7 @@ import { loadRules } from './rules/loader.js';
 import { SqliteStore } from './db/store.js';
 import { startWorker } from './worker.js';
 import { registerAdmin } from './web/admin.js';
+import { registerBasicAuth } from './web/auth.js';
 import type { Store } from './queue/types.js';
 
 /**
@@ -45,7 +46,13 @@ function isAuthorized(req: { query: unknown; headers: Record<string, unknown> })
 export function buildServer(engine?: RulesEngine, store?: Store): FastifyInstance {
   const app = Fastify({ logger: false });
 
+  // Basic Auth over everything except /webhook and /health (see web/auth.ts).
+  // Registered first so it's obvious it covers the routes below — though as an
+  // onRequest hook it applies to every route regardless of order.
+  registerBasicAuth(app);
+
   app.get('/health', async () => ({ ok: true, service: 'monday-automation-service' }));
+  // Raw webhook payloads — patient names and addresses. Protected by the hook.
   app.get('/api/last-events', async () => ({ events: recentEvents }));
 
   // Configurator UI + its API (Phase 7).
@@ -101,6 +108,13 @@ export function buildServer(engine?: RulesEngine, store?: Store): FastifyInstanc
 }
 
 export async function startServer(): Promise<FastifyInstance> {
+  if (env.adminPassword === DEFAULT_ADMIN_PASSWORD) {
+    log.warn(
+      `Configurator is using the DEFAULT password (${env.adminUser}/${DEFAULT_ADMIN_PASSWORD}) — ` +
+        'set ADMIN_PASSWORD before this is reachable from the internet.',
+    );
+  }
+
   const store = new SqliteStore();
   const engine = new RulesEngine({ rules: loadRules(), store });
   startWorker(store, engine, env.workerIntervalMs);

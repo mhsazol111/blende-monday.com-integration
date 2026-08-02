@@ -525,11 +525,43 @@ clone landing first).
     ignoring other groups, delayed move queueing with the destination rendered at event time, and
     the two-clone-rules dedupe.
 
-**All offline suites pass: `npm test` → 189 checks (ingress 10, engine 83, queue 32, polish 36,
-cutover 9, admin 7, exchange 12).**
+**Configurator login — HTTP Basic Auth (2026-08-02):** the admin UI and its API were open to anyone
+with the URL. Only 7 **write** routes were gated (`adminAuthorized` → `?secret=`); every read was
+public: `/api/rules` (email bodies + recipient addresses), `/api/queue` (rendered patient emails),
+`/api/last-events` (raw monday payloads), and `/api/discover?boardId=` — an **unauthenticated proxy
+to the monday API using the service's token**, usable against any board that token can see.
+  - **`src/web/auth.ts`** — a global Fastify `onRequest` hook (`registerBasicAuth`, wired first in
+    `buildServer`). **Deny-by-default:** everything is protected except a two-path carve-out,
+    `POST /webhook` (monday sends no `Authorization` header and can't be taught to — it keeps
+    authenticating with its own `?secret=`) and `GET /health` (Coolify/Traefik healthchecks). A
+    route added later is closed the moment it exists, the inverse of the per-route opt-in it
+    replaced.
+  - **No frontend changes.** The 401 + `WWW-Authenticate` on the top-level document load makes the
+    browser prompt natively; it then attaches the header to every same-origin request, so all of
+    `web/app.js`'s `fetch()` calls just work. Verified in a real browser: config/rules/queue/
+    last-events + a save `PUT` all 200 with **no `?secret=` in the URL**.
+  - **`adminAuthorized` moved to `auth.ts`** and now accepts **either** Basic Auth **or** the old
+    `?secret=`/`x-webhook-secret`, so bookmarked `?secret=` links and curl scripting keep working
+    (that secret already gated every write — honouring it grants nothing new). The write routes in
+    `admin.ts` still call it: same predicate, belt-and-braces if a path is ever carved out.
+  - **Env:** `ADMIN_USER` (default `admin`) / `ADMIN_PASSWORD` (default `admin`, exported as
+    `DEFAULT_ADMIN_PASSWORD`). Deliberately **fail-closed** — the opposite of the `WEBHOOK_SHARED_SECRET`
+    convention where unset ⇒ allow, which is how this was left open. `startServer` logs a loud WARN
+    while the default password is in use. Credentials are compared via sha256 digests +
+    `timingSafeEqual`, and both fields are checked unconditionally (no early return on a bad username).
+  - **Known limits (accepted for the testing phase):** one shared account, no per-user audit trail,
+    and **no logout** — Basic Auth credentials are cached until the browser fully quits. The
+    intended upgrade before go-live is Cloudflare Access (real SSO, zero code) — if added, its policy
+    **must exclude `/webhook`** or every automation dies behind a login redirect.
+  - `test:admin` +6 (7→13): 401 without creds, the `WWW-Authenticate` challenge, 401 on a wrong
+    password, both carve-outs still public, and the authenticated happy path.
 
-**Configurator:** run `npm run dev` (or `npm start`) and open `http://localhost:<PORT>/`. If
-`WEBHOOK_SHARED_SECRET` is set, saving requires `?secret=<value>` on the URL.
+**All offline suites pass: `npm test` → 195 checks (ingress 10, engine 83, queue 32, polish 36,
+cutover 9, admin 13, exchange 12).**
+
+**Configurator:** run `npm run dev` (or `npm start`) and open `http://localhost:<PORT>/`, then sign
+in with `ADMIN_USER`/`ADMIN_PASSWORD` (default `admin`/`admin`) at the browser prompt. Appending
+`?secret=<WEBHOOK_SHARED_SECRET>` still works as an alternative credential.
 
 _Update this section as phases progress._
 
@@ -852,6 +884,7 @@ webhook ingress, and runs the scheduler in-process.
    | `CONTACT_OPTOUT_COLUMN_ID` | `color_mm5e9gs2` (the "Email Allowed" column; blank = gate disabled). The old `EMAIL_OPTOUT_COLUMN_ID` name still works |
    | `CONTACT_OPTOUT_BLOCK_VALUE` | `No` (default) — the value that suppresses contact |
    | `CONTACT_OPTOUT_CHANNELS` | `email,slack` (default) — set to `email` to leave Slack ungated |
+   | `ADMIN_USER` / `ADMIN_PASSWORD` | configurator login (Basic Auth). **Set a real password** — it defaults to `admin`/`admin` |
    | `PORT` | `3000` (matches the Dockerfile/EXPOSE) |
    `DATABASE_PATH` and `RULES_PATH` are already set to `/app/data/...` in the Dockerfile.
 3. **Persistent volume:** mount one at **`/app/data`** (rules + queue survive redeploys). Without
@@ -859,8 +892,9 @@ webhook ingress, and runs the scheduler in-process.
 4. **Single instance** — do NOT scale to >1 replica (the queue has no cross-worker locking → duplicate sends).
 5. Set the **domain**; Coolify/Traefik gives HTTPS. Expose port `3000`.
 6. Deploy → check `https://<domain>/health`.
-7. Open `https://<domain>/` to build rules (the volume's rules.json starts empty). Saving needs
-   `?secret=<WEBHOOK_SHARED_SECRET>` appended to the URL.
+7. Open `https://<domain>/` to build rules (the volume's rules.json starts empty) and sign in at the
+   browser prompt with `ADMIN_USER`/`ADMIN_PASSWORD`. That's sufficient for saving too; appending
+   `?secret=<WEBHOOK_SHARED_SECRET>` still works as an alternative credential.
 8. **Register monday webhooks** to `https://<domain>/webhook?secret=<SECRET>` and delete the old
    localtunnel one. Mutations (run against the monday API with the token):
    - register subitem changes: `create_webhook(board_id: 18403436566, url: "https://<domain>/webhook?secret=<SECRET>", event: change_subitem_column_value)`
@@ -868,7 +902,9 @@ webhook ingress, and runs the scheduler in-process.
    - (add `create_pulse`, `change_column_value`, etc. on the main board for group/status rules)
 
 **Notes:** the worker loop starts with the server (no external cron). `/api/last-events` is a debug
-route currently open — gate or remove for production. The in-image `RULES_PATH`/`DATABASE_PATH` point
+route holding raw payloads — as of 2026-08-02 it sits behind the Basic Auth hook, so it's no longer
+public, but it's still worth removing once payload reconciliation is done. The in-image
+`RULES_PATH`/`DATABASE_PATH` point
 at the volume, so the bundled `config/rules.json` is NOT used in the container.
 
 ---
