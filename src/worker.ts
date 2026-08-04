@@ -32,14 +32,17 @@ export async function runDueActions(
   let suppressed = 0;
   for (const row of due) {
     try {
-      // Fire-time gate: a timed reminder self-cancels if the state that justified it
-      // no longer holds (e.g. the patient signed/booked since it was armed).
-      if (!(await engine.shouldFireQueued(row.ruleId, row.itemId))) {
+      // Fire-time prep, in one hydrate: (a) a timed reminder self-cancels if the
+      // state that justified it no longer holds (e.g. the patient signed/booked
+      // since it was armed), and (b) the payload is re-rendered against the item
+      // as it is NOW, so a message queued days ago doesn't describe a stale board.
+      const prep = await engine.prepareQueued(row);
+      if (!prep.fire) {
         store.markCancelled(row.id);
         skipped++;
         continue;
       }
-      const res = await engine.dispatch(row.actionType, row.payload, { itemId: row.itemId });
+      const res = await engine.dispatch(row.actionType, prep.payload, { itemId: row.itemId });
       if (res.suppressed) {
         // Terminal, like `sent` — retrying can't change consent — but recorded
         // distinctly with its reason so the queue UI shows why nothing arrived.

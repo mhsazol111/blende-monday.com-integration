@@ -141,13 +141,27 @@ Enter the group → email now, Slack at 48h, email at 72h. Cancels itself if the
 - **Actions:** ① Send email (email A) `immediately` · ② Send Slack (notif A) `after 48 Hours` · ③ Send email (email B) `after 72 Hours`
 - No cancel rule — leaving the group auto-clears the pending 48h/72h sends.
 
-### Rule 2 — NP Intake: welcome + x-ray nudge
-Enter the group → welcome email, mark the welcome-email subitem done, Slack at 48h.
+### Rule 2 — NP Intake: welcome (two rules)
+Enter the group → welcome email + mark the welcome-email subitem done. Two days later, Slack a
+request for x-rays — **only if the patient has x-rays**.
 
+**2a — welcome on entry**
 - **Trigger:** Item entered the group · **Scope:** NP Intake (`group_title`)
-- **Actions:** ① Send email (email 1) `immediately` · ② Set a monday value → Target **Subitem** → the welcome-email subitem → Status = **Done** `immediately` · ③ Send Slack (notif B, request x-rays) `after 48 Hours`
+- **Actions:** ① Send email (email 1) `immediately` · ② Set a monday value → Target **Subitem** → the welcome-email subitem → Status = **Done** `immediately`
 - The subitem must exist on the item first. If subitems are cloned on entry, put a **Clone
   template subitems** action before ②.
+
+**2b — x-ray request at 2 days, gated on the X-rays column**
+- **Trigger:** Item in group for **2** days · **Scope:** NP Intake (`group_title`)
+- **Condition:** Item column **X-rays** (`color_mm5fdxvj`) · is equal · **Yes**
+- **Action:** Send Slack (notif B, request x-rays) `immediately` (= at the 2-day mark)
+- **Why a separate timed rule:** conditions on an *instant* trigger are evaluated when the event
+  fires — at group entry the X-rays column is usually still empty, so a gated `+48h` action on
+  Rule 2a would never send. A timed rule's conditions are **re-checked at fire time**
+  (`shouldFireQueued`), so the column is read at the 2-day mark, after intake has filled it in.
+- Empty column at the 2-day mark ⇒ **no Slack** (only an explicit `Yes` sends). If the value is
+  filled in *after* the mark, that run is already skipped — nothing re-fires.
+- Leaving NP Intake before the 2 days still auto-cancels the pending Slack, as before.
 
 ### Rule 3 — NP Intake: "Unscheduled" abandoned-cart drip
 Status → Unscheduled → email now, Slack at 48h, email at 120h. Stops if status → Scheduled.
@@ -234,3 +248,29 @@ In a bucket > 1 month → set Lead Status and Slack the coordinator to archive.
 - **Cloning (Rule 4)** — one board-wide rule now covers every group; don't add a second clone rule
   for a group it already covers. (If two clone rules do overlap, the second one detects the
   already-cloned subitems and skips, so you get one set — but it's still noise.)
+
+---
+
+## 8. Writing "what's still outstanding" messages
+
+The missing-docs reminders are built from one block per document:
+
+```
+{{#subitem "Medication List"}}
+  {{#ifEquals column.status "Done"}}{{else}}<li>Provide the medications list</li>{{/ifEquals}}
+{{/subitem}}
+```
+
+Two behaviours to design around (both settled 2026-08-04):
+
+- **The text is generated when the message SENDS**, not when the reminder is scheduled. A
+  subitem ticked Done during the wait drops out of the list on its own. The same applies to
+  `{{column.…}}` values and email recipient columns — all read fresh at send time.
+- **A block whose subitem isn't on the item prints nothing.** So the list only ever mentions
+  checklist items that patient actually has. The trade-off: a document missing from that
+  item's subitems is never chased. If a line must always appear, make sure the subitem is in
+  the group's **template** *and* on the existing items — adding it to a template does not
+  back-fill items created earlier.
+- **Names must match the subitem exactly** (case-insensitive, but not spelling). Hospital -
+  CPMC/Kaiser use `Received consent forms`; the in-office groups use `Receive consent forms`.
+  Check the group's template item before writing a block.

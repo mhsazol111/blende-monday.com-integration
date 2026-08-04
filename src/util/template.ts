@@ -96,15 +96,24 @@ function findSubitemClose(s: string, from: number): number {
   return -1;
 }
 
-/** Build the child context for a `{{#subitem "name"}}` block. */
-function scopeForSubitem(context: Record<string, unknown>, name: string): Record<string, unknown> {
+/**
+ * Build the child context for a `{{#subitem "name"}}` block, or `null` when the
+ * item has no such subitem.
+ *
+ * `null` means the block renders NOTHING. It used to render with empty columns,
+ * which made "subitem absent" indistinguishable from "subitem not done" — so
+ * `{{#ifEquals column.status "Done"}}…{{else}}` took the else branch and the
+ * message claimed work was outstanding on a checklist item that doesn't exist on
+ * that patient. A block can only describe a subitem the item actually has.
+ */
+function scopeForSubitem(context: Record<string, unknown>, name: string): Record<string, unknown> | null {
   const list = Array.isArray(context.subitems)
     ? (context.subitems as Array<{ name: string; column: Record<string, string> }>)
     : [];
   const sub = list.find((s) => String(s.name).toLowerCase() === name.toLowerCase());
-  const resolvedName = sub?.name ?? name;
-  const column = sub?.column ?? {};
-  return { ...context, name: resolvedName, column, subitem: { name: resolvedName, column } };
+  if (!sub) return null;
+  const column = sub.column ?? {};
+  return { ...context, name: sub.name, column, subitem: { name: sub.name, column } };
 }
 
 /** Pre-render {{#subitem "Name"}} blocks with the named subitem as the scope. */
@@ -127,7 +136,9 @@ function renderSubitemBlocks(tpl: string, context: Record<string, unknown>): str
     }
     const body = rest.slice(bodyStart, close);
     // Recurse so nested blocks, conditionals, and {{vars}} render against the scope.
-    out += renderTemplate(body, scopeForSubitem(context, m[1]));
+    // No such subitem on this item → the whole block is dropped.
+    const scope = scopeForSubitem(context, m[1]);
+    if (scope) out += renderTemplate(body, scope);
     rest = rest.slice(close + SUBITEM_CLOSE_TAG.length);
   }
   return out;

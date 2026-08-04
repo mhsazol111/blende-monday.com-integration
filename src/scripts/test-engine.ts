@@ -608,16 +608,25 @@ async function main() {
     check('subitem blocks scope per named subitem', e.slacks[0]?.text === 'X:NEED P:Done');
   }
 
-  // 18c) a {{#subitem}} for a name not on the item → empty columns, else branch, no throw.
+  // 18c) a {{#subitem}} for a name not on the item renders NOTHING. It must not
+  // fall through to {{else}} — "this patient has no such checklist item" is not
+  // the same as "it isn't done yet", and reporting it as outstanding is a lie.
   {
     const rule: Rule = {
       id: 'subblkmiss', enabled: true, boardId: BOARD, scope: { groupId: GROUP },
       trigger: { type: 'item_entered_group' },
-      actions: [{ type: 'slack', when: { mode: 'immediate' }, text: '{{#subitem "Nope"}}[{{name}}:{{#ifEquals column.status "Done"}}d{{else}}x{{/ifEquals}}]{{/subitem}}' }],
+      actions: [{ type: 'slack', when: { mode: 'immediate' }, text: 'A{{#subitem "Nope"}}[{{name}}:{{#ifEquals column.status "Done"}}d{{else}}x{{/ifEquals}}]{{/subitem}}B' }],
     };
     const e = makeEngine([rule], makeItem({ subitems: [] }));
     await e.engine.handleEvent(entered(100));
-    check('missing subitem block → name + else branch, no throw', e.slacks[0]?.text === '[Nope:x]');
+    check('missing subitem block renders nothing (no else fallthrough)', e.slacks[0]?.text === 'AB');
+
+    // …while a subitem that IS present still takes the else branch when not done.
+    const e2 = makeEngine([rule], makeItem({ subitems: [
+      { id: 9, boardId: 18403436575, name: 'Nope', columns: { status: { text: 'Working on it', value: null, type: 'color' } } },
+    ] }));
+    await e2.engine.handleEvent(entered(100));
+    check('present-but-unfinished subitem still takes the else branch', e2.slacks[0]?.text === 'A[Nope:x]B');
   }
 
   // 18d) nested {{#subitem}} blocks resolve independently (direct renderTemplate).

@@ -9,6 +9,7 @@ import type {
   QueuedActionRow,
   QueuedActionType,
   QueuedStatus,
+  RenderEnvelope,
   Store,
 } from '../queue/types.js';
 
@@ -65,6 +66,7 @@ export class SqliteStore implements Store {
     // Added after the initial schema shipped, so existing databases need an
     // ALTER. `CREATE TABLE IF NOT EXISTS` above is a no-op on those.
     this.addColumnIfMissing('queued_actions', 'status_reason', 'TEXT');
+    this.addColumnIfMissing('queued_actions', 'render_json', 'TEXT');
   }
 
   /** Idempotent `ALTER TABLE … ADD COLUMN` (SQLite has no `IF NOT EXISTS` for it). */
@@ -80,14 +82,15 @@ export class SqliteStore implements Store {
     try {
       this.db
         .prepare(
-          `INSERT INTO queued_actions (item_id, rule_id, action_type, payload_json, due_at, status, dedupe_key, created_at)
-           VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)`,
+          `INSERT INTO queued_actions (item_id, rule_id, action_type, payload_json, render_json, due_at, status, dedupe_key, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
         )
         .run(
           entry.itemId,
           entry.ruleId,
           entry.actionType,
           JSON.stringify(entry.payload),
+          entry.render ? JSON.stringify(entry.render) : null,
           entry.dueAt,
           entry.dedupeKey ?? null,
           Date.now(),
@@ -223,6 +226,7 @@ function rowToQueuedAction(row: any): QueuedActionRow {
     ruleId: String(row.rule_id),
     actionType: String(row.action_type) as QueuedActionType,
     payload: JSON.parse(row.payload_json),
+    render: parseRender(row.render_json),
     dueAt: Number(row.due_at),
     status: String(row.status) as QueuedStatus,
     statusReason: row.status_reason ?? undefined,
@@ -231,4 +235,19 @@ function rowToQueuedAction(row: any): QueuedActionRow {
     createdAt: Number(row.created_at),
     sentAt: row.sent_at === null ? null : Number(row.sent_at),
   };
+}
+
+/**
+ * Null for rows queued before re-rendering shipped (they send as armed). Bad JSON
+ * is treated the same way rather than throwing — a corrupt envelope must not stop
+ * the queue from draining.
+ */
+function parseRender(json: unknown): RenderEnvelope | undefined {
+  if (typeof json !== 'string' || !json) return undefined;
+  try {
+    return JSON.parse(json) as RenderEnvelope;
+  } catch {
+    log.warn('Queued action has unreadable render_json; it will be sent as originally rendered.');
+    return undefined;
+  }
 }

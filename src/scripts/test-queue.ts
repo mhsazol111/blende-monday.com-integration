@@ -287,6 +287,241 @@ async function main() {
     }
   }
 
+  // J3-J5) the shape the real x-ray nudge uses: a timed rule gated by an
+  // `conditionGroups` column value that is still EMPTY when the rule is armed and
+  // only gets filled in during the wait. This is why the nudge is a timed rule and
+  // not a delayed action on the entry rule (those conditions run at event time).
+  {
+    const XRAY = 'color_mm5fdxvj';
+    const rules: Rule[] = [
+      {
+        id: 'xray-nudge', enabled: true, boardId: BOARD, scope: { groupId: GROUP_A },
+        trigger: { type: 'item_in_group_for_days', days: 2 },
+        conditionGroups: [{ conditions: [{ type: 'column_equals', columnId: XRAY, value: 'Yes' }] }],
+        actions: [{ type: 'slack', when: { mode: 'immediate' }, text: 'Request x-rays' }],
+      },
+    ];
+    const mkHarness = (xrayRef: { v: string }) => {
+      const store = new SqliteStore(':memory:');
+      const slacks: SlackMessage[] = [];
+      const senders: Senders = { async sendEmail() {}, async sendSlack(m) { slacks.push(m); } };
+      const hydrate = async (): Promise<ItemContext> => ({
+        ...item(GROUP_A),
+        columns: { [XRAY]: { text: xrayRef.v, value: null, type: 'color' } },
+      });
+      return { store, slacks, engine: new RulesEngine({ rules, store, senders, hydrate }) };
+    };
+
+    // J3: empty at entry, "Yes" by the 2-day mark → sends.
+    {
+      const xray = { v: '' };
+      const { store, engine, slacks } = mkHarness(xray);
+      await engine.handleEvent(entered());
+      check('x-ray nudge is armed even though the column is empty at entry', store.dueActions(future).length === 1);
+      xray.v = 'Yes';
+      const r = await runDueActions(store, engine, now + 3 * DAY);
+      check('x-ray nudge fires when the column reads Yes at the 2-day mark', r.sent === 1 && slacks.length === 1);
+      store.close();
+    }
+
+    // J4: still empty at the 2-day mark → skipped (patient never had x-rays recorded).
+    {
+      const xray = { v: '' };
+      const { store, engine, slacks } = mkHarness(xray);
+      await engine.handleEvent(entered());
+      const r = await runDueActions(store, engine, now + 3 * DAY);
+      check('x-ray nudge is skipped while the column is empty', r.sent === 0 && r.skipped === 1 && slacks.length === 0);
+      store.close();
+    }
+
+    // J5: explicit "No" → skipped.
+    {
+      const xray = { v: 'No' };
+      const { store, engine, slacks } = mkHarness(xray);
+      await engine.handleEvent(entered());
+      const r = await runDueActions(store, engine, now + 3 * DAY);
+      check('x-ray nudge is skipped when the column reads No', r.sent === 0 && r.skipped === 1 && slacks.length === 0);
+      store.close();
+    }
+  }
+
+  // L) send-time re-render: a queued message reflects the item as it is when it
+  // SENDS, not as it was when the rule armed. This is the whole point of the
+  // "what's still outstanding" reminders — the checklist moves during the wait.
+  {
+    const XRAY = 'Request x-rays';
+    const mk = (rules: Rule[], subs: () => Array<{ name: string; status: string }>, itemName = () => 'Pt') => {
+      const store = new SqliteStore(':memory:');
+      const slacks: SlackMessage[] = [];
+      const emails: any[] = [];
+      const senders: Senders = { async sendEmail(m) { emails.push(m); }, async sendSlack(m) { slacks.push(m); } };
+      const hydrate = async (): Promise<ItemContext> => ({
+        ...item(GROUP_A),
+        name: itemName(),
+        subitems: subs().map((s, i) => ({
+          id: i + 1, boardId: 18403436575, name: s.name,
+          columns: { status: { text: s.status, value: null, type: 'color' } },
+        })),
+      });
+      return { store, slacks, emails, engine: new RulesEngine({ rules, store, senders, hydrate }) };
+    };
+    const missingDocs: Rule[] = [
+      {
+        id: 'missing-docs', enabled: true, boardId: BOARD, scope: { groupId: GROUP_A },
+        trigger: { type: 'item_in_group_for_days', days: 7 },
+        actions: [{
+          type: 'slack', when: { mode: 'immediate' },
+          text: `{{#subitem "${XRAY}"}}{{#ifEquals column.status "Done"}}{{else}}NEED-XRAYS{{/ifEquals}}{{/subitem}}`,
+        }],
+      },
+    ];
+
+    // L1: ticked Done during the 7-day wait → the reminder drops that line.
+    {
+      const sub = { name: XRAY, status: 'Pending' };
+      const { store, engine, slacks } = mk(missingDocs, () => [sub]);
+      await engine.handleEvent(entered());
+      sub.status = 'Done'; // staff completes it during the wait
+      await runDueActions(store, engine, now + 8 * DAY);
+      check('re-render drops work completed during the wait', slacks[0]?.text === '');
+      store.close();
+    }
+
+    // L2: still outstanding at send time → still reported.
+    {
+      const sub = { name: XRAY, status: 'Pending' };
+      const { store, engine, slacks } = mk(missingDocs, () => [sub]);
+      await engine.handleEvent(entered());
+      await runDueActions(store, engine, now + 8 * DAY);
+      check('re-render keeps work that is still outstanding', slacks[0]?.text === 'NEED-XRAYS');
+      store.close();
+    }
+
+    // L3: a subitem added to the template AFTER the item was cloned is picked up.
+    {
+      const subs: Array<{ name: string; status: string }> = [];
+      const { store, engine, slacks } = mk(missingDocs, () => subs);
+      await engine.handleEvent(entered()); // armed with NO subitems at all
+      subs.push({ name: XRAY, status: 'Pending' });
+      await runDueActions(store, engine, now + 8 * DAY);
+      check('re-render sees subitems that appeared after arming', slacks[0]?.text === 'NEED-XRAYS');
+      store.close();
+    }
+
+    // L4: plain {{vars}} are re-read too (item renamed during the wait).
+    {
+      let name = 'Old Name';
+      const rules: Rule[] = [{
+        id: 'nm', enabled: true, boardId: BOARD, scope: { groupId: GROUP_A },
+        trigger: { type: 'item_entered_group' },
+        actions: [{ type: 'slack', when: { mode: 'relative', days: 2 }, text: 'Hi {{item.name}}' }],
+      }];
+      const { store, engine, slacks } = mk(rules, () => [], () => name);
+      await engine.handleEvent(entered());
+      name = 'New Name';
+      await runDueActions(store, engine, now + 3 * DAY);
+      check('re-render picks up column/name changes', slacks[0]?.text === 'Hi New Name');
+      store.close();
+    }
+
+    // L5: legacy rows (queued before render envelopes existed) send exactly as armed.
+    {
+      const { store, engine, slacks } = mk([], () => []);
+      store.enqueue({ itemId: 100, ruleId: 'gone', actionType: 'slack', payload: { text: 'frozen' }, dueAt: now });
+      const r = await runDueActions(store, engine, now + 1);
+      check('row without a render envelope sends as armed', r.sent === 1 && slacks[0]?.text === 'frozen');
+      store.close();
+    }
+
+    // L6: hydrate failure → send as armed rather than dropping or blanking it.
+    {
+      const store = new SqliteStore(':memory:');
+      const slacks: SlackMessage[] = [];
+      const senders: Senders = { async sendEmail() {}, async sendSlack(m) { slacks.push(m); } };
+      let alive = true;
+      const engine = new RulesEngine({
+        rules: [{
+          id: 'hf', enabled: true, boardId: BOARD, scope: { groupId: GROUP_A },
+          trigger: { type: 'item_entered_group' },
+          actions: [{ type: 'slack', when: { mode: 'relative', days: 1 }, text: 'Hi {{item.name}}' }],
+        }],
+        store, senders,
+        hydrate: async () => {
+          if (!alive) throw new Error('monday down');
+          return item(GROUP_A);
+        },
+      });
+      await engine.handleEvent(entered());
+      alive = false;
+      const r = await runDueActions(store, engine, now + 2 * DAY);
+      check('hydrate failure at send time → sends the armed payload', r.sent === 1 && slacks[0]?.text === 'Hi Item');
+      store.close();
+    }
+
+    // L7: recipients are re-resolved, but a newly-empty column keeps the armed ones
+    // (better a slightly stale address than an email with nowhere to go).
+    {
+      const store = new SqliteStore(':memory:');
+      const emails: any[] = [];
+      const senders: Senders = { async sendEmail(m) { emails.push(m); }, async sendSlack() {} };
+      let addr = 'first@example.com';
+      const engine = new RulesEngine({
+        rules: [{
+          id: 'rcp', enabled: true, boardId: BOARD, scope: { groupId: GROUP_A },
+          trigger: { type: 'item_entered_group' },
+          actions: [{ type: 'email', when: { mode: 'relative', days: 1 }, subject: 's', body: 'b', toFromColumns: ['email_col'] }],
+        }],
+        store, senders,
+        hydrate: async () => ({
+          ...item(GROUP_A),
+          columns: { email_col: { text: addr, value: null, type: 'email' } },
+        }),
+      });
+      await engine.handleEvent(entered());
+      addr = 'corrected@example.com';
+      await runDueActions(store, engine, now + 2 * DAY);
+      check('recipients re-resolved at send time', emails[0]?.to.join() === 'corrected@example.com');
+
+      const store2 = new SqliteStore(':memory:');
+      const emails2: any[] = [];
+      const senders2: Senders = { async sendEmail(m) { emails2.push(m); }, async sendSlack() {} };
+      let addr2 = 'kept@example.com';
+      const engine2 = new RulesEngine({
+        rules: [{
+          id: 'rcp2', enabled: true, boardId: BOARD, scope: { groupId: GROUP_A },
+          trigger: { type: 'item_entered_group' },
+          actions: [{ type: 'email', when: { mode: 'relative', days: 1 }, subject: 's', body: 'b', toFromColumns: ['email_col'] }],
+        }],
+        store: store2, senders: senders2,
+        hydrate: async () => ({
+          ...item(GROUP_A),
+          columns: { email_col: { text: addr2, value: null, type: 'email' } },
+        }),
+      });
+      await engine2.handleEvent(entered());
+      addr2 = ''; // column cleared during the wait
+      await runDueActions(store2, engine2, now + 2 * DAY);
+      check('cleared recipient column falls back to the armed recipients', emails2[0]?.to.join() === 'kept@example.com');
+      store.close();
+      store2.close();
+    }
+
+    // L8: the condition gate still wins over a successful re-render.
+    {
+      const sub = { name: XRAY, status: 'Pending' };
+      const gated: Rule[] = [{
+        ...missingDocs[0], id: 'gated',
+        conditions: [{ type: 'subitem_not_checked', columnId: 'status', subitemName: XRAY, label: 'Done' }],
+      }];
+      const { store, engine, slacks } = mk(gated, () => [sub]);
+      await engine.handleEvent(entered());
+      sub.status = 'Done';
+      const r = await runDueActions(store, engine, now + 8 * DAY);
+      check('condition gate still cancels before re-rendering matters', r.skipped === 1 && slacks.length === 0);
+      store.close();
+    }
+  }
+
   // K) clear_pending scope='rules' cancels only the targeted rule's queued actions.
   {
     // K1: store-level scoped cancel.

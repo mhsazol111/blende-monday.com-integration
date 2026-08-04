@@ -280,8 +280,8 @@ subitems** and branch on each. New scoping block in `src/util/template.ts`:
 and the existing conditionals resolve against that named subitem (matched case-insensitively against
 `context.subitems`). A `renderSubitemBlocks` pre-pass runs before `renderConditionals` (balanced
 `findSubitemClose` scanner for nesting; recurses via `renderTemplate` with a `scopeForSubitem` child
-context). Missing subitem → its name + empty columns (conditionals fall to `{{else}}`); unbalanced
-tags emit literally. `buildContext` (`src/rules/engine.ts`) now exposes `ctx.subitems` (all subitems
+context). Missing subitem → its name + empty columns (conditionals fall to `{{else}}`) — **superseded
+2026-08-04: the block now renders nothing at all**, see below; unbalanced tags emit literally. `buildContext` (`src/rules/engine.ts`) now exposes `ctx.subitems` (all subitems
 as `{name, column}` via the shared `subitemCtx`). Templates without the block are byte-identical to
 before. UI: a "subitem block" snippet chip (`conditionalSnippets`, gated on a subitem board)
 pre-filled with a real subitem name (`subitemNamePicker` caches `state.groupSubitemNames`). Verified:
@@ -374,10 +374,9 @@ UI (`web/app.js`) swaps the single people combo for a checkbox list (reusing the
 id**, and migrates `toFromColumn` → `toFromColumns` on edit (same pattern as `status_changed_to` →
 `item_column_changed`). `test:polish` +6 (6→12). Verified live: the real patient item resolves its
 Patient Email column end-to-end.
-  - **Known gap (pre-existing, unchanged):** recipients are resolved at **event time** and baked into
-    the queued payload, so a *delayed* email reads the column when the rule fires, not when it sends.
-    If the address is filled in after the trigger, the queued send has no recipient and
-    `senders/index.ts` logs `[email] skipped — no recipients`.
+  - ~~**Known gap:** recipients are resolved at **event time** and baked into the queued payload~~ —
+    **fixed 2026-08-04** by the send-time re-render (`prepareQueued`); an address filled in after the
+    trigger is now picked up.
 
 **Email opt-out gate (2026-07-20):** patients who don't want email contact are now suppressed
 service-wide by a **global gate at send time**, not a per-rule condition. `EMAIL_OPTOUT_COLUMN_ID`
@@ -407,9 +406,9 @@ monday call), the worker and admin pass `itemId`.
     2026-07-29 — the gate now covers Slack too; see below.)_
   - UI: `GET /api/config` returns the gate config, and the email action editor shows a hint stating
     whether the gate is active and on which column — so nobody re-implements it as a condition.
-  - **Unchanged pre-existing gap:** recipient *addresses* are still resolved at arm time and frozen
-    into the queued payload (`engine.ts:356`). The gate fixes the consent half; a delayed email whose
-    address column changes after arming still uses the old address.
+  - ~~**Unchanged pre-existing gap:** recipient *addresses* are still resolved at arm time~~ —
+    **fixed 2026-08-04**: the send-time re-render resolves them from the live item, so consent and
+    address are now both read when the message actually goes out.
 
 **Suppression is now visible, not silent (2026-07-21):** a withheld email was reported exactly like a
 delivered one — the "run now" button toasted success, the queue row read `sent`, and the only trace
@@ -556,7 +555,86 @@ to the monday API using the service's token**, usable against any board that tok
   - `test:admin` +6 (7→13): 401 without creds, the `WWW-Authenticate` challenge, 401 on a wrong
     password, both carve-outs still public, and the authenticated happy path.
 
-**All offline suites pass: `npm test` → 195 checks (ingress 10, engine 83, queue 32, polish 36,
+**X-ray nudge gated on the X-rays column (2026-08-04):** the client asked that NP Intake's 48h
+"Request x-rays" Slack only go out when the patient **has** x-rays (column **X-rays**
+`color_mm5fdxvj`, labels `No`=0 / `Yes`=1 — see §5). Adding a condition to the existing entry rule
+would NOT work: conditions on an *instant* trigger are evaluated at **event time**, and at group
+entry that column is still empty, so the gated action would never send (and
+`shouldFireQueued` only re-checks `item_in_group_for_days` rules). Extending the fire-time re-check
+to all queued actions was rejected — it would silently break the drips whose conditions are
+trigger-time facts (e.g. `np-intake--on-status-stuck--…`, where "status is Stuck" no longer holds
+48h later).
+  - **No code change.** The Slack action was moved out of
+    `np-intake--on-item-enter--consult-invite-plus-48h-xray-nudge` (renamed
+    **`np-intake--on-item-enter--consult-invite-plus-welcome-letter-done`**, which now only sends
+    the email + marks the welcome-letter subitem Done) into a new timed rule
+    **`np-intake--after-2d--xray-request-slack-if-patient-has-xrays`**: trigger
+    `item_in_group_for_days days:2` (= the same 48h), condition
+    `column_equals color_mm5fdxvj "Yes"`, one immediate slack action. Timed conditions are
+    re-evaluated at fire time, so the column is read at the 2-day mark, not at entry.
+  - **Semantics:** only an explicit `Yes` sends — `No` **and empty** both skip (the action is
+    `markCancelled`ed, never retried). A value filled in *after* the 2-day mark does not re-fire.
+    `column_equals` is strict `===` on the hydrated label, so the board label must stay exactly
+    `Yes`. Leaving NP Intake early still auto-cancels the pending Slack, as before.
+  - The rename is behaviour-neutral (no scoped `clear_pending` referenced the old id; queued rows
+    under it still fire — `shouldFireQueued` returns `true` for an unknown id).
+  - `test:queue` +4 (32→36): armed while the column is empty, fires on `Yes` at the mark, skips on
+    empty, skips on `No`. Docs updated (`docs/AUTOMATION-RULES.md` Rule 2a/2b,
+    `docs/CLIENT-GUIDE.md`).
+  - **Not yet applied to the deployed instance** — production reads `/app/data/rules.json` on the
+    Coolify volume, not the repo's `config/rules.json`. Re-create both rules in the configurator (or
+    paste the ruleset into **Advanced — apply & save**).
+
+**Queued actions re-render at send time + `{{#subitem}}` requires the subitem (2026-08-04):** the
+"missing docs" reminders (`*--after-7d--missing-docs-*`) listed paperwork the patient had already
+handed in, and listed paperwork that isn't even tracked on their item. Three independent causes,
+all now fixed:
+  - **The message was rendered when the rule ARMED, not when it sent.** `onEnteredGroup` called
+    `renderAction` and stored the finished string; the worker sent it verbatim. For an
+    `item_in_group_for_days` rule that's a snapshot from 7–21 days earlier, taken seconds after the
+    subitems were cloned — so every subitem was still Pending and nothing ticked off during the wait
+    could ever show. **Fix:** `QueueEntry.render?: RenderEnvelope` (`{action, hints}`,
+    `src/queue/types.ts`) persists the un-rendered action next to the rendered payload, in a new
+    `queued_actions.render_json` column (idempotent `addColumnIfMissing`). New
+    **`RulesEngine.prepareQueued(row, {recheckConditions})`** replaces the worker's bare
+    `shouldFireQueued` call: **one** hydrate now does both the condition gate and a re-render.
+    `RenderHints` (`{status?, subitemName?}`, from `hintsFromEvent`) carries the event-only context
+    a re-render can't recover — the triggering status label and subitem name — and `buildContext`
+    was split into `hintsFromEvent` + `contextFrom(item, hints)` so both paths share one builder.
+    **Fails safe everywhere:** no envelope (rows queued before this shipped), un-hydratable item, or
+    a render throw (e.g. the target subitem was deleted) all send the payload **as armed** — a send
+    is never dropped or blanked. Only the condition gate returns `fire:false`.
+    - This also closes the long-standing **recipient-freeze gap**: `to`/`toFromColumns` are
+      re-resolved at send time, so an address filled in after arming is now used. Guard
+      (`keepArmedRecipients`): if the fresh resolve is empty but the armed payload had addresses
+      (column cleared mid-wait), the armed ones are kept rather than sending nowhere.
+    - Admin **"run now"** re-renders too, but passes `recheckConditions:false` — a manual override
+      shouldn't be vetoed by the gate.
+    - Rule *edits* still don't reach already-queued actions (the armed action is what re-renders) —
+      unchanged, and deliberate.
+  - **`{{#subitem "X"}}` on a subitem the item doesn't have now renders NOTHING** (was: a scope with
+    empty columns, so `{{#ifEquals column.status "Done"}}…{{else}}` took the else branch and claimed
+    the work was outstanding). `scopeForSubitem` returns `null` and `renderSubitemBlocks` drops the
+    block (`src/util/template.ts`). Verified against the live board first: all 80 `{{#subitem}}`
+    blocks in `config/rules.json` reference `column.*`, so none relied on the old name-fallback.
+  - **Name mismatches** (audited live, 2026-08-04). `Received consent forms` (past tense) is what the
+    **Hospital - CPMC** and **Hospital - Kaiser** templates clone, but both rules asked for
+    `Receive consent forms` — fixed **in the rules**, per the client's call to leave board data
+    alone. Still-open data issues, for the client to decide (NOT code bugs): `Medication List` and
+    `Medical/dental insurance` are in the Halsey/Vu/CPMC/Kaiser **templates** but on **0** of their
+    live items (added to the templates after those items were cloned; `templateAlreadyApplied` never
+    back-fills), and `Sign treatment plan` is in **no** in-office/hospital template (it reaches those
+    items only by carrying over from NP Consultation — 3/6 Halsey items have it). With the block fix
+    those lines now silently omit rather than mis-report.
+  - Verified end-to-end against real item `12474455701`: the 1-week Slack went from 6 bullets (2 of
+    them phantom) to 4 real ones. Migration proven on a copy of a real DB and on a synthetic
+    pre-change schema — the old pending row sent its frozen text and `hydrate` was never called.
+  - `test:queue` +9 (36→45: completed-during-wait dropped, still-outstanding kept, subitems that
+    appear after arming, `{{vars}}` refreshed, legacy row as-armed, hydrate failure as-armed,
+    recipients re-resolved + the empty-fallback, condition gate still wins), `test:engine` +1
+    (83→84: missing block drops, present-but-unfinished still reports).
+
+**All offline suites pass: `npm test` → 209 checks (ingress 10, engine 84, queue 45, polish 36,
 cutover 9, admin 13, exchange 12).**
 
 **Configurator:** run `npm run dev` (or `npm start`) and open `http://localhost:<PORT>/`, then sign
@@ -669,6 +747,14 @@ plus block conditionals: `{{#if path}}…{{else}}…{{/if}}`, `{{#unless path}}�
 `{{#ifEquals path "value"}}…{{/ifEquals}}` (case-insensitive), nestable — and a named-subitem scope
 block `{{#subitem "Exact Name"}}…{{/subitem}}` (inside it `{{name}}`/`{{column.<id>}}`/conditionals
 refer to that subitem; lets one message describe several subitems) — see `src/util/template.ts`.
+A `{{#subitem}}` block whose subitem is **not on the item renders nothing** — "not tracked here" is
+not "not done yet", so it must never fall through to `{{else}}`.
+
+**Scheduled messages are rendered twice**: once when the action is queued (the fallback payload) and
+again from freshly hydrated data just before it sends (`RulesEngine.prepareQueued`). So a delayed
+message describes the item at **send** time — columns, subitem statuses and email recipients are all
+current. If the re-render can't run (old row, monday unreachable, deleted subitem) the armed payload
+is sent unchanged.
 
 ### Rule scope
 Every rule names either one group (`scope.groupId`), a title substring (`groupTitleContains`), or
@@ -685,7 +771,8 @@ template from the group title).
    Progress→Done fires twice); never re-fires while a value sits unchanged.
 5. **Recipients**: literal addresses and/or any number of configurable columns (`toFromColumns`) —
    email/text columns are read directly, a people column resolves via the `users()` lookup. Merged
-   and deduped. Resolved at **event time** (baked into the queued payload), not at send time.
+   and deduped. Resolved at **send time** (a queued action re-renders before it goes out), falling
+   back to the addresses resolved when it was armed if the live resolve comes back empty.
 6. **Contact consent**: a board-wide opt-out column (`CONTACT_OPTOUT_COLUMN_ID`, or the original
    `EMAIL_OPTOUT_COLUMN_ID`) suppresses notifications for an item at **send time**, ahead of every
    email and Slack action — immediate, scheduled and admin "run now". Empty/untouched ⇒ allowed.
@@ -747,6 +834,9 @@ _From `npm run discover` on 2026-06-11. Use these IDs when authoring rules / fix
   text.
 - **Email-bearing columns** (recipient sources): `email_mm5az59s` (Patient Email, type `email` —
   added 2026-07), `text_mm2wm34h` (Referring Provider Email, type `text`).
+- **X-rays column:** `color_mm5fdxvj` (type `status`) — labels `No`=0, `Yes`=1; plus a free-text
+  `long_text_mm5fhcga` ("X-rays more info"). Gates the NP Intake 2-day x-ray Slack (see §2); the
+  condition is strict `===` on the label text, so don't rename the `Yes` label.
 - **Contact opt-out column:** `color_mm5e9gs2` ("Email Allowed", type `status`) — created 2026-07-20.
   Labels: `Yes`=1 (green), `No`=2 (red); **every existing item was left empty**, which the gate reads
   as allowed. Set `CONTACT_OPTOUT_COLUMN_ID=color_mm5e9gs2` (or the legacy `EMAIL_OPTOUT_COLUMN_ID`)
@@ -945,7 +1035,7 @@ random form (`generateRuleId()`, `web/app.js`), so rename it by hand.
 | `any-group-clone-templates` | `all-groups--on-item-enter--clone-template-subitems` |
 | `any-group-move-to-column` | `all-groups--on-move-to-change--move-item-then-clear-column` |
 | `unscheduled-intake-item_entered_group-cpxpf` | `unscheduled-intake--on-item-enter--thanks-plus-48h-72h-followup` |
-| `np-intake-item_entered_group-8hr97` | `np-intake--on-item-enter--consult-invite-plus-48h-xray-nudge` |
+| `np-intake-item_entered_group-8hr97` | `np-intake--on-item-enter--consult-invite-plus-welcome-letter-done` (was `…--consult-invite-plus-48h-xray-nudge` until 2026-08-04, when its 48h Slack moved to `np-intake--after-2d--xray-request-slack-if-patient-has-xrays`) |
 | `np-intake-item_column_changed-h2bd2` | `np-intake--on-status-stuck--reschedule-plus-48h-72h-followup` |
 | `np-intake-item_column_changed-nv7s0` | `np-intake--on-status-scheduled--cancel-stuck-followups` |
 | `np-intake-item_in_group_for_days-tw6ry` | `np-intake--after-31d--lead-cool-plus-archive-alert` |

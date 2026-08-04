@@ -14,7 +14,7 @@ import {
   type UpdateWriter,
   type GroupMover,
 } from '../monday/write.js';
-import type { EngineStore, QueuedActionType } from '../queue/types.js';
+import type { EngineStore, QueuedActionRow, QueuedActionType, RenderHints } from '../queue/types.js';
 import type { Action, ActionWhen, Condition, EmailAction, Rule, Trigger } from './types.js';
 
 const DAY_MS = 86_400_000;
@@ -167,6 +167,10 @@ export class RulesEngine {
       }
     }
 
+    // Event-only context, kept alongside any queued action so a send-time
+    // re-render can reproduce {{status}} / {{subitem.*}} from a fresh item.
+    const hints = hintsFromEvent(event);
+
     // Extra signals some conditions need beyond the hydrated item (e.g. the
     // source group on a move, which only the event carries).
     const evalCtx: ConditionContext = {
@@ -191,7 +195,7 @@ export class RulesEngine {
         // Isolate actions: one failing action (e.g. a bad Slack webhook) must not
         // abort the rest of the rule's actions or other matched rules.
         try {
-          const outcome = await this.runAction(rule, curItem, action, ctx);
+          const outcome = await this.runAction(rule, curItem, action, ctx, hints);
           bump(result, outcome);
           // Re-hydrate after a clone that created subitems so subsequent actions
           // in this rule operate on the fresh subitem list (fixes clone→set_column
@@ -222,6 +226,7 @@ export class RulesEngine {
     item: ItemContext,
     action: Action,
     ctx: Record<string, unknown>,
+    hints: RenderHints,
   ): Promise<ActionOutcome> {
     if (action.type === 'clear_pending') {
       if (!this.store) {
@@ -268,7 +273,9 @@ export class RulesEngine {
       }
       const { actionType, payload } = renderAction(action, ctx, item);
       const dueAt = dueAtFor(action.when, item);
-      this.store.enqueue({ itemId: item.id, ruleId: rule.id, actionType, payload, dueAt });
+      // `render` lets the worker re-render this against fresh data at send time;
+      // `payload` (rendered now) is the fallback if that can't run.
+      this.store.enqueue({ itemId: item.id, ruleId: rule.id, actionType, payload, dueAt, render: { action, hints } });
       log.info(`[rule ${rule.id}] ${action.type} scheduled for ${new Date(dueAt).toISOString()}.`);
       return 'scheduled';
     }
@@ -385,16 +392,65 @@ export class RulesEngine {
    */
   async shouldFireQueued(ruleId: string, itemId: number): Promise<boolean> {
     const rule = this.rules.find((r) => r.id === ruleId);
-    if (!rule || rule.trigger.type !== 'item_in_group_for_days') return true;
-    const hasConditions = !!(rule.conditionGroups?.length || rule.conditions?.length);
-    if (!hasConditions) return true;
+    if (!this.needsConditionRecheck(rule)) return true;
     try {
       const item = await this.hydrate(itemId);
       if (!item) return true;
-      return conditionsPass(rule, item, {});
+      return conditionsPass(rule!, item, {});
     } catch (err) {
       log.warn(`shouldFireQueued: could not re-check rule ${ruleId} for item ${itemId}; firing.`, err);
       return true;
+    }
+  }
+
+  /** Only timed rules that actually have conditions are re-evaluated at fire time. */
+  private needsConditionRecheck(rule: Rule | undefined): boolean {
+    if (!rule || rule.trigger.type !== 'item_in_group_for_days') return false;
+    return !!(rule.conditionGroups?.length || rule.conditions?.length);
+  }
+
+  /**
+   * Prepare a due action for sending: re-check the fire-time condition gate AND
+   * re-render the payload against a freshly hydrated item.
+   *
+   * Re-rendering matters because a queued action's text was rendered when the rule
+   * armed — up to weeks earlier for `item_in_group_for_days`. Without this, a
+   * "what's still outstanding" message lists work that has since been completed.
+   *
+   * Fails safe at every step: no envelope (rows queued before this shipped), an
+   * un-hydratable item, or a render error all fall back to the payload as armed —
+   * a send is never silently dropped or blanked. Only the condition gate returns
+   * `fire: false`, and only for timed rules (see `needsConditionRecheck`).
+   */
+  async prepareQueued(
+    row: Pick<QueuedActionRow, 'ruleId' | 'itemId' | 'actionType' | 'payload' | 'render'>,
+    opts: { recheckConditions?: boolean } = {},
+  ): Promise<{ fire: boolean; payload: unknown }> {
+    const asArmed = { fire: true, payload: row.payload };
+    const rule = this.rules.find((r) => r.id === row.ruleId);
+    const gate = (opts.recheckConditions ?? true) && this.needsConditionRecheck(rule);
+    if (!gate && !row.render) return asArmed; // nothing to do — skip the monday call
+
+    let item: ItemContext | null = null;
+    try {
+      item = await this.hydrate(row.itemId);
+    } catch (err) {
+      log.warn(`prepareQueued: could not hydrate item ${row.itemId}; sending as armed.`, err);
+    }
+    if (!item) return asArmed;
+
+    if (gate && !conditionsPass(rule!, item, {})) return { fire: false, payload: row.payload };
+    if (!row.render) return asArmed;
+
+    try {
+      const ctx = contextFrom(item, row.render.hints ?? {});
+      const { payload } = renderAction(row.render.action, ctx, item);
+      return { fire: true, payload: keepArmedRecipients(row.actionType, row.payload, payload) };
+    } catch (err) {
+      // e.g. the action targets a subitem that has since been deleted. Better to
+      // send slightly stale text than nothing at all.
+      log.warn(`prepareQueued: re-render failed for rule ${row.ruleId} / item ${row.itemId}; sending as armed.`, err);
+      return asArmed;
     }
   }
 
@@ -421,6 +477,7 @@ export class RulesEngine {
       // (immediate → fire at N days; relative/relative_from_column → N days + that
       // delay; absolute → its own timestamp).
       const base = now + rule.trigger.days * DAY_MS;
+      const hints = hintsFromEvent(event);
       const ctx = buildContext(item, event);
       rule.actions.forEach((action, idx) => {
         if (action.type === 'clear_pending' || action.type === 'clone_template_subitems') return;
@@ -436,6 +493,9 @@ export class RulesEngine {
           payload,
           dueAt: dueAtFor(action.when, item, base),
           dedupeKey: `timed:${rule.id}:${item.id}:${now}:${idx}`,
+          // Timed rules wait days or weeks — re-rendering at send time is what
+          // keeps "what's still outstanding" lists honest.
+          render: { action, hints },
         });
         result.scheduled++;
       });
@@ -789,16 +849,29 @@ function conditionPass(c: Condition, item: ItemContext, ctx: ConditionContext): 
 }
 
 function buildContext(item: ItemContext, event: NormalizedEvent): Record<string, unknown> {
+  return contextFrom(item, hintsFromEvent(event));
+}
+
+/**
+ * The bits of a template context only the triggering event knows. Captured when
+ * an action is queued so a send-time re-render can reproduce them from a freshly
+ * hydrated item (see `RenderHints`).
+ */
+function hintsFromEvent(event: NormalizedEvent): RenderHints {
+  if (event.kind === 'status_changed' && event.label) return { status: event.label };
+  if (event.kind === 'subitem_changed') return { subitemName: String((event.raw as any).pulseName ?? '') };
+  return {};
+}
+
+/** Build the template context from a hydrated item plus the event-derived hints. */
+function contextFrom(item: ItemContext, hints: RenderHints): Record<string, unknown> {
   const column: Record<string, string> = {};
   for (const [id, snap] of Object.entries(item.columns)) column[id] = snap.text;
-
-  let status = item.columns['status']?.text ?? '';
-  if (event.kind === 'status_changed' && event.label) status = event.label;
 
   const ctx: Record<string, unknown> = {
     item: { id: item.id, name: item.name },
     group: { id: item.groupId, title: item.groupTitle },
-    status,
+    status: hints.status ?? item.columns['status']?.text ?? '',
     column,
     // All subitems by name, so templates can scope to a specific one via
     // {{#subitem "Name"}}…{{/subitem}} regardless of the trigger.
@@ -808,13 +881,28 @@ function buildContext(item: ItemContext, event: NormalizedEvent): Record<string,
   // For subitem-triggered rules, expose the TRIGGERING subitem so templates can
   // use {{subitem.name}} and {{subitem.column.<id>}}. (A per-action subitemName
   // can override this in renderAction, so even non-subitem triggers can target one.)
-  if (event.kind === 'subitem_changed') {
-    const name = String((event.raw as any).pulseName ?? '');
+  if (hints.subitemName !== undefined) {
+    const name = hints.subitemName;
     const sub = item.subitems.find((s) => s.name.toLowerCase() === name.toLowerCase());
     ctx.subitem = subitemCtx(sub, name);
   }
 
   return ctx;
+}
+
+/**
+ * Recipients are re-resolved on a re-render, which is the point (a delayed email
+ * picks up an address filled in after the rule armed). But if the fresh resolve
+ * comes back empty while the armed payload had addresses — a cleared column, a
+ * people-column blip — fall back to those rather than dropping the send.
+ */
+function keepArmedRecipients(actionType: QueuedActionType, armed: unknown, fresh: unknown): unknown {
+  if (actionType !== 'email') return fresh;
+  const freshTo = (fresh as { to?: string[] }).to ?? [];
+  const armedTo = (armed as { to?: string[] })?.to ?? [];
+  if (freshTo.length > 0 || armedTo.length === 0) return fresh;
+  log.warn('Re-render resolved no email recipients; keeping the ones resolved when the action was armed.');
+  return { ...(fresh as object), to: armedTo };
 }
 
 /** Shape the `{{subitem.*}}` template context for one subitem (name + columns). */

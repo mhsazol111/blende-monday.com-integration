@@ -3,7 +3,34 @@
  * SQLite directly) so it stays testable with an in-memory/mock store.
  */
 
+import type { Action } from '../rules/types.js';
+
 export type QueuedActionType = 'email' | 'slack' | 'set_column' | 'post_update' | 'move_item_to_group';
+
+/**
+ * Event-derived context a re-render can't recover from the item alone, captured
+ * when the action is armed:
+ * - `status` — the label the triggering event carried (a `status_changed` trigger
+ *   fired *because* of it, so `{{status}}` should keep meaning that, not whatever
+ *   the column reads days later).
+ * - `subitemName` — the subitem that triggered the rule; re-resolved against the
+ *   fresh item at send time so `{{subitem.*}}` shows current values.
+ */
+export interface RenderHints {
+  status?: string;
+  subitemName?: string;
+}
+
+/**
+ * Everything needed to re-render a queued action against fresh monday data at
+ * send time. Without it a delayed message describes the item as it was when the
+ * rule armed — days or weeks earlier. Optional: rows queued before this shipped
+ * have none and are sent exactly as rendered.
+ */
+export interface RenderEnvelope {
+  action: Action;
+  hints: RenderHints;
+}
 /**
  * `suppressed` = deliberately not delivered (today: the recipient is opted out of
  * email). Terminal like `sent` — never retried — but distinct so the UI can say
@@ -15,8 +42,10 @@ export interface QueueEntry {
   itemId: number;
   ruleId: string;
   actionType: QueuedActionType;
-  /** Fully-rendered payload (EmailMessage | SlackMessage) — sent as-is later. */
+  /** Payload rendered when the action was armed — the fallback if a re-render can't run. */
   payload: unknown;
+  /** Raw action + event hints, so the payload can be re-rendered at send time. */
+  render?: RenderEnvelope;
   /** Epoch ms when the action becomes due. */
   dueAt: number;
   /** Optional idempotency key to avoid duplicate scheduling. */

@@ -196,7 +196,10 @@ export function registerAdmin(app: FastifyInstance, engine?: RulesEngine, store?
     const action = store.getAction(id);
     if (!action) return reply.code(404).send({ error: 'action not found' });
     try {
-      const res = await engine.dispatch(action.actionType, action.payload, { itemId: action.itemId });
+      // Re-render against current data (same as the worker), but skip the
+      // condition gate — "run now" is an explicit manual override.
+      const prep = await engine.prepareQueued(action, { recheckConditions: false });
+      const res = await engine.dispatch(action.actionType, prep.payload, { itemId: action.itemId });
       if (res.suppressed) {
         // Not a failure — but never report it as a successful send either.
         store.markSuppressed(id, Date.now(), res.suppressed.detail);

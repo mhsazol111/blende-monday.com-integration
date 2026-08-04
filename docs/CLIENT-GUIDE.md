@@ -42,8 +42,9 @@ A single automation can have several actions with different timings — that's h
    patient leaves the group, the not-yet-sent messages are cancelled automatically.
 
 2. **NP Intake — welcome + x-ray nudge.** When a patient enters *NP Intake*: send the
-   welcome email, mark the "welcome email" subitem as done, and Slack a request for
-   x-rays after 2 days.
+   welcome email and mark the "welcome email" subitem as done. Two days later, Slack a
+   request for x-rays — but **only if the patient's "X-rays" column says Yes**. If it says
+   No or is still blank at the 2-day mark, no Slack goes out.
 
 3. **NP Intake — went Unscheduled ("abandoned cart").** When a patient's status changes to
    *Unscheduled*: send an email now, a Slack after 2 days, and an email after ~5 days. If
@@ -114,14 +115,26 @@ You build and edit automations in the configurator — the web tool we set up fo
    - **Send email** → **after a delay** → **3 days**
 3. Save. No cancel step needed — leaving the group cancels the waiting messages.
 
-### Rule 2 — NP Intake welcome + x-ray nudge
+### Rule 2 — NP Intake welcome + x-ray nudge (two automations)
+**Part A — the welcome**
 1. New rule → Trigger **Item entered the group** → Group **NP Intake**.
 2. Actions:
    - **Send email** (welcome) → **immediately**
    - **Set a monday value** → Target **Subitem** → the welcome-email subitem → Status **Done** → **immediately**
-   - **Send Slack** (request x-rays) → **after a delay** → **2 days**
 3. Save. If subitems are added when patients enter, put a **Clone template subitems**
    action *before* the "Set a monday value" step.
+
+**Part B — the x-ray request, only for patients who have x-rays**
+1. New rule → Trigger **Item in group for N days** → **2** days → Group **NP Intake**.
+2. Condition: Subject **Item column → X-rays** → Operator **is equal** → Value **Yes**.
+3. Action: **Send Slack** (request x-rays) → **immediately** (that means "at the 2-day mark").
+4. Save.
+
+> The x-ray check happens **when the message is about to go out**, not when the patient
+> enters the group — so your team has the full 2 days to fill the **X-rays** column in. If it
+> still says *No* or is blank at that point, nothing is sent. (That is also why this is a
+> separate automation: a condition on Part A would be checked at entry, when the column is
+> almost always still empty.)
 
 ### Rule 3 — NP Intake "went Unscheduled" drip (two automations)
 **Part A — the drip**
@@ -188,6 +201,26 @@ matches **exactly**:
 
 Open the item, confirm the subitem name and that its status is exactly the label the
 automation expects.
+
+### "The message listed things the patient had already done."
+Fixed on 2026-08-04. Messages are now written out **at the moment they're sent**, so
+anything your team ticks off during the wait disappears from the list. (Before, the text
+was written when the reminder was scheduled — days or weeks earlier — and never updated.)
+
+### "The message listed a document that isn't even on this patient's item."
+Also fixed. A `{{#subitem "…"}}` section in a message now prints **nothing** when that
+subitem doesn't exist on the item, instead of reporting it as outstanding.
+
+The flip side is worth knowing: if a checklist subitem is genuinely missing from an item,
+that line is **silently omitted** rather than chased. Two ways it happens:
+- The subitem was added to the group's **template** after the patient's item was created —
+  existing items don't get new template subitems added retroactively.
+- The checklist item lives in a different group's template (e.g. *Sign treatment plan* is on
+  the NP Consultation template, not the in-office ones — it only reaches an in-office item
+  if the patient passed through NP Consultation).
+
+If a line should always appear, add that subitem to the group's template **and** to the
+existing items you care about.
 
 ### "Nothing fires at all — no email, no Slack."
 - **Is the board connected?** Automations need your monday board connected to receive
