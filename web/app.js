@@ -1221,11 +1221,29 @@ function editingRuleId() {
 
 let lastEditingId = null;
 
+/**
+ * Scroll `row` into view *within* its scrolling container, and only if it isn't
+ * already visible — a row the user can see must not move under their cursor.
+ * Measured with rects rather than offsetTop so it doesn't depend on which
+ * ancestor happens to be positioned, and never touches the page scroll.
+ */
+function revealInList(list, row, pad = 8) {
+  const r = row.getBoundingClientRect();
+  const l = list.getBoundingClientRect();
+  if (r.top < l.top) list.scrollTop -= l.top - r.top + pad;
+  else if (r.bottom > l.bottom) list.scrollTop += r.bottom - l.bottom + pad;
+}
+
 function renderRuleList() {
   const list = $('ruleList');
+  // Rebuilding the list resets scrollTop to 0, which yanked the list back to the
+  // top on every re-render (including a plain "edit" click). Remember it and put
+  // it back once the rows are in.
+  const prevScroll = list.scrollTop;
   list.innerHTML = '';
   $('ruleCount').textContent = state.ruleset.rules.length;
   const editing = editingRuleId();
+  let editingRow = null;
   if (!state.ruleset.rules.length) {
     list.appendChild(el('div', { class: 'empty' }, [el('span', { class: 'big', text: '📋' }), 'No rules yet — build one on the left.']));
     return;
@@ -1253,12 +1271,14 @@ function renderRuleList() {
     const del = el('button', { class: 'danger', text: 'delete', onclick: () => deleteRule(i) });
     const row = el('div', { class: 'rule-item' + (isEditing ? ' editing' : '') }, [meta, el('div', {}, [edit, del])]);
     list.appendChild(row);
-    // Reveal it only when the target changed — scrolling on every keystroke
-    // would fight the user. Scroll the list itself, never the page.
-    if (isEditing && editing !== lastEditingId) {
-      list.scrollTop = Math.max(0, row.offsetTop - list.offsetTop - 8);
-    }
+    if (isEditing) editingRow = row;
   });
+
+  // Scrolling has to wait until every row is in the DOM. Doing it inside the
+  // loop clamped scrollTop to the height built SO FAR, which parked the clicked
+  // rule at the bottom of the list.
+  list.scrollTop = prevScroll;
+  if (editingRow && editing !== lastEditingId) revealInList(list, editingRow);
   lastEditingId = editing;
 }
 
