@@ -673,6 +673,33 @@ the old ones. A backup of both column definitions and every filled value was tak
     with no dangling time clause, midnight as 12:05 AM, and a `{{#subitem}}` block splitting its own
     date. Live-verified: writing `{date, time}` reads back as `text: "2026-08-07 11:15"`.
 
+**Surgery outline now triggers on the appointment date, not the subitem (2026-08-05):** the five
+`*--on-welcome-email-done--surgery-outline-update` rules fired when the "Send Welcome Surgery email"
+subitem (Kaiser: "…email to pt.") reached Done. The client wanted them to fire when **Treatment
+Appointment Date** gets a value instead, so the outline carries a real date. Renamed to
+**`*--on-treatment-date-set--surgery-outline-update`**; trigger is now `item_column_changed` on
+`date_mm5x7k9w` with **no** `value` (any change), plus one condition `column_not_empty` on the same
+column. Rules-only — no code change.
+  - **The condition is required, not cosmetic:** monday sends the same `change_column_value` webhook
+    when a date is *cleared* as when it is *set*, and the trigger can't tell them apart. Without it,
+    deleting the date posts an outline with an empty `Date:` line.
+  - **It re-fires on every edit of the date** (a reschedule posts a corrected outline). Accepted by
+    the client; there is no once-only guard.
+  - Unchanged: the action is still `post_update` targeting the **subitem**, and
+    `{{subitem.column.location_mm4xfbm9}}` still resolves — `post_update` binds `{{subitem.*}}` from
+    the action's own `subitemName`, not from the trigger, so a non-subitem trigger is fine. The
+    board's `change_column_value` webhook already delivers this, so no registration was needed.
+  - The rename is safe: no scoped `clear_pending` names these ids and every action is `immediate`,
+    so nothing queues under them. §12's mapping table is updated to the new ids.
+  - Verified offline against the real ruleset: date set → `matched=1 executed=1` with the outline
+    rendering "August 19, 2026 / 11:15 AM"; date cleared → `matched=0`; date set on an item in an
+    unrelated group → `matched=0`.
+
+> **`blende-monday.mhsazol.me` is a STAGING server** (confirmed by the client 2026-08-05). The
+> caveats above about draining the queue, in-flight rows keeping a stale render envelope, and
+> pre-rename `queued_actions.rule_id` values are therefore not worth acting on there — redeploy and
+> re-apply rules freely. Revisit before a production instance exists.
+
 **All offline suites pass: `npm test` → 216 checks (ingress 10, engine 91, queue 45, polish 36,
 cutover 9, admin 13, exchange 12).**
 
@@ -1105,11 +1132,11 @@ random form (`generateRuleId()`, `web/app.js`), so rename it by hand.
 | `in-office-w-vu-in-group-days-ehx6e` | `in-office-vu--after-7d--missing-docs-update-plus-1w-3w-alerts` |
 | `hospital-cpmc-in-group-days-yxscu` | `hospital-cpmc--after-7d--missing-docs-update-plus-1w-3w-alerts` |
 | `hospital-kaiser-in-group-days-2mi4x` | `hospital-kaiser--after-7d--missing-docs-update-plus-1w-3w-alerts` |
-| `in-office-w-halsey-subitem-set-vpa9s` | `in-office-halsey--on-welcome-email-done--surgery-outline-update` |
-| `in-office-w-lee-subitem-set-kbhoz` | `in-office-lee--on-welcome-email-done--surgery-outline-update` |
-| `in-office-w-vu-subitem-set-p3zvm` | `in-office-vu--on-welcome-email-done--surgery-outline-update` |
-| `hospital-cpmc-subitem-set-6gowk` | `hospital-cpmc--on-welcome-email-done--surgery-outline-update` |
-| `hospital-kaiser-subitem-set-hagpy` | `hospital-kaiser--on-welcome-email-done--surgery-outline-update` |
+| `in-office-w-halsey-subitem-set-vpa9s` | `in-office-halsey--on-treatment-date-set--surgery-outline-update` |
+| `in-office-w-lee-subitem-set-kbhoz` | `in-office-lee--on-treatment-date-set--surgery-outline-update` |
+| `in-office-w-vu-subitem-set-p3zvm` | `in-office-vu--on-treatment-date-set--surgery-outline-update` |
+| `hospital-cpmc-subitem-set-6gowk` | `hospital-cpmc--on-treatment-date-set--surgery-outline-update` |
+| `hospital-kaiser-subitem-set-hagpy` | `hospital-kaiser--on-treatment-date-set--surgery-outline-update` |
 | `post-surgery-subitem-set-wnzr6` | `post-surgery--on-second-visit-done--recall-slack-after-delay` |
 
 The rename was a one-shot script (not committed). `config/rules.live.json` is an untracked snapshot
