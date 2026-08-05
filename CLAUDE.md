@@ -1130,7 +1130,7 @@ rules were renamed to a **self-describing** convention:
 Three `--`-separated parts, kebab-case inside each. The group comes first so related rules sort
 together in the configurator list. Examples:
 
-- `np-intake--on-status-stuck--reschedule-plus-48h-72h-followup`
+- `np-intake--on-status-canceled-or-missed--reschedule-plus-48h-72h-followup`
 - `hospital-cpmc--after-31d--lead-cool-plus-archive-alert`
 - `post-surgery--on-second-visit-done--recall-slack-after-delay`
 
