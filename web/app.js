@@ -322,9 +322,23 @@ function availableVariables() {
     { label: 'Group title', token: '{{group.title}}', hint: '{{group.title}} — group title' },
     { label: 'Item status', token: '{{status}}', hint: '{{status}} — item status label' },
   ];
-  const cols = boardCols().map((c) => ({
-    label: c.title, token: `{{column.${c.id}}}`, hint: `{{column.${c.id}}} — ${c.title} [${c.type}]`,
-  }));
+  const cols = [];
+  for (const c of boardCols()) {
+    cols.push({ label: c.title, token: `{{column.${c.id}}}`, hint: `{{column.${c.id}}} — ${c.title} [${c.type}]` });
+    // A date column carries an optional time of day, and {{column.x}} prints
+    // both at once ("2026-08-19 11:15"). These two split it for sentences that
+    // want one or the other.
+    if (isDateCol(c)) {
+      cols.push({
+        label: `${c.title} (date)`, token: `{{columnDate.${c.id}}}`,
+        hint: `{{columnDate.${c.id}}} — ${c.title}, date only (August 19, 2026)`,
+      });
+      cols.push({
+        label: `${c.title} (time)`, token: `{{columnTime.${c.id}}}`,
+        hint: `{{columnTime.${c.id}}} — ${c.title}, time only (11:15 AM); blank when no time is set`,
+      });
+    }
+  }
   const subs = subCols().length
     ? [{ label: 'subitem: name', token: '{{subitem.name}}', hint: '{{subitem.name}} — triggering subitem name (subitem rules)' }].concat(
         subCols().map((c) => ({
@@ -373,6 +387,9 @@ const ANY_GROUP = '__any__';
 function boardCols() { return state.structure?.board?.columns ?? []; }
 function subCols() { return state.structure?.subitemBoard?.columns ?? []; }
 function byType(cols, types) { return cols.filter((c) => types.includes(c.type)); }
+// Column types whose text starts with a date, so {{columnDate}}/{{columnTime}}
+// have something to split (see columnDateParts).
+function isDateCol(c) { return c.type === 'date' || c.type === 'timeline'; }
 function colOptions(cols) { return cols.map((c) => ({ value: c.id, label: `${c.title} [${c.type}]` })); }
 function groupOptions() { return (state.structure?.board?.groups ?? []).map((g) => ({ value: g.id, label: g.title })); }
 // Server-side contact-consent gate — applies to every rule on the gated channels,

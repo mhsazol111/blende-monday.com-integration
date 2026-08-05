@@ -907,6 +907,74 @@ async function main() {
     check('second clone rule sees the fresh subitems and skips', r.executed === 1);
   }
 
+  // 24) A date column splits into {{columnDate}} / {{columnTime}} so one cell can
+  // fill a "Date: … Time: …" sentence. The raw {{column}} form is unchanged.
+  {
+    const appt = { text: '2026-08-19 11:15', value: '{"date":"2026-08-19","time":"18:15:00"}', type: 'date' };
+    const rules: Rule[] = [{
+      id: 'appt', enabled: true, boardId: BOARD, scope: { groupId: GROUP },
+      trigger: { type: 'item_entered_group' },
+      actions: [{
+        type: 'slack', when: { mode: 'immediate' },
+        text: 'raw={{column.appt}} date={{columnDate.appt}} time={{columnTime.appt}} status={{columnTime.status}}',
+      }],
+    }];
+    const { engine, slacks } = makeEngine(rules, makeItem({
+      columns: { status: { text: 'Working on it', value: null, type: 'color' }, appt },
+    }));
+    await engine.handleEvent(entered(100));
+    check('raw {{column}} still prints monday text', slacks[0]?.text.includes('raw=2026-08-19 11:15'));
+    check('{{columnDate}} formats the date half', slacks[0]?.text.includes('date=August 19, 2026'));
+    check('{{columnTime}} formats the time half', slacks[0]?.text.includes('time=11:15 AM'));
+    check('{{columnTime}} on a non-date column is blank', slacks[0]?.text.includes('status= ') || slacks[0]!.text.endsWith('status='));
+  }
+
+  // 24b) A date with no time of day: the date renders, the time stays empty — so
+  // a "{{#if columnTime}} at …{{/if}}" phrase omits itself rather than trailing.
+  {
+    const rules: Rule[] = [{
+      id: 'appt-noon', enabled: true, boardId: BOARD, scope: { groupId: GROUP },
+      trigger: { type: 'item_entered_group' },
+      actions: [{
+        type: 'slack', when: { mode: 'immediate' },
+        text: 'on {{columnDate.appt}}{{#if columnTime.appt}} at {{columnTime.appt}}{{/if}}',
+      }],
+    }];
+    const dateOnly = makeEngine(rules, makeItem({
+      columns: { appt: { text: '2026-08-19', value: null, type: 'date' } },
+    }));
+    await dateOnly.engine.handleEvent(entered(100));
+    check('date-only cell renders without a time clause', dateOnly.slacks[0]?.text === 'on August 19, 2026');
+
+    const withTime = makeEngine(rules, makeItem({
+      columns: { appt: { text: '2026-08-19 00:05', value: null, type: 'date' } },
+    }));
+    await withTime.engine.handleEvent(entered(100));
+    check('midnight renders as 12:05 AM, not 0:05', withTime.slacks[0]?.text === 'on August 19, 2026 at 12:05 AM');
+  }
+
+  // 24c) Inside a {{#subitem}} block the split maps are shadowed too, so they
+  // read the subitem's own date rather than the parent item's.
+  {
+    const rules: Rule[] = [{
+      id: 'sub-date', enabled: true, boardId: BOARD, scope: { groupId: GROUP },
+      trigger: { type: 'item_entered_group' },
+      actions: [{
+        type: 'slack', when: { mode: 'immediate' },
+        text: '{{#subitem "Surgery"}}{{columnDate.appt}} at {{columnTime.appt}}{{/subitem}}',
+      }],
+    }];
+    const { engine, slacks } = makeEngine(rules, makeItem({
+      columns: { appt: { text: '2026-01-02 09:00', value: null, type: 'date' } },
+      subitems: [{
+        id: 7, boardId: 18403436575, name: 'Surgery',
+        columns: { appt: { text: '2026-08-19 15:45', value: null, type: 'date' } },
+      }],
+    }));
+    await engine.handleEvent(entered(100));
+    check('subitem block splits the subitem’s own date', slacks[0]?.text === 'August 19, 2026 at 3:45 PM');
+  }
+
   console.log(`\n${passed} checks passed.`);
 }
 

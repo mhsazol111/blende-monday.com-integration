@@ -634,7 +634,46 @@ all now fixed:
     recipients re-resolved + the empty-fallback, condition gate still wins), `test:engine` +1
     (83→84: missing block drops, present-but-unfinished still reports).
 
-**All offline suites pass: `npm test` → 209 checks (ingress 10, engine 84, queue 45, polish 36,
+**Appointment columns became date+time (2026-08-04):** the client asked for **Initial Appointment
+Date** and **Treatment Appointment Date** to be a date-**time** picker instead of a date range.
+monday cannot change a column's type, so both `timeline` columns were replaced by `date` columns
+(monday's Date column *is* the date+time selector) — see §5 for the new ids. Done via the API:
+create → migrate the 7 filled items (all one-day ranges → their start date, no time) → `delete_column`
+the old ones. A backup of both column definitions and every filled value was taken first.
+  - **Why it mattered:** the intake form's own "Appointment Date/Time" question **does** capture a
+    time (`{"date":"2026-07-30","time":"06:00:00"}`), and the PHP's `timeline_value()` threw it away.
+    Worse, monday stores date+time in **UTC**: a 23:00-local appointment has a UTC date of the *next*
+    day, so the date-only copy recorded it a day late. `appointment_date_value()` now passes `date`
+    **and** `time` through verbatim (both boards are date columns storing UTC), which fixes both.
+  - **`{{columnDate.<id>}}` / `{{columnTime.<id>}}`** added to the template context
+    (`indexColumnText` in `engine.ts`, formatting in **`src/util/datetime.ts`**) — "August 19, 2026"
+    and "11:15 AM". Needed because the surgery-outline rules render `Date:` and `Time:` from the
+    *same* variable, which with a date+time cell would print `2026-08-19 11:15` in both slots.
+    `{{column.<id>}}` is unchanged (raw monday text). Non-date columns yield empty strings, so the
+    new maps are inert elsewhere. Derived from `.text` (account timezone), **never** from `value`
+    (UTC) — see §5. `scopeForSubitem` shadows both maps too, so inside a `{{#subitem}}` block they
+    read that subitem. UI: date/timeline columns get two extra variable chips.
+  - **Rules rewritten** (`config/rules.json`, 34 references): ids swapped, the surgery outline's
+    `Date:`/`Time:` lines now use the two halves, and prose reads
+    `{{columnDate.X}}{{#if columnTime.X}} at {{columnTime.X}}{{/if}}`. Two empty-value blemishes the
+    change exposed were guarded — "consultation appointment on !" now drops the clause, and a
+    date-with-no-time renders "Please arrive one and a half hours early" instead of "Start time is
+      please arrive…".
+  - **Not yet applied to the deployed instance** — production reads `/app/data/rules.json` on the
+    Coolify volume, not the repo's `config/rules.json`. Until the ruleset is re-applied there (paste
+    it into **Advanced — apply & save**), the live rules still reference the two **deleted** columns,
+    which hydrate as absent: appointment dates render blank and `{{#unless}}` "Schedule surgery"
+    fires for everyone. Deploy the code and re-apply the rules together.
+  - **Already-queued actions keep their old envelope.** `render.action` stores the action as it was
+    when armed, and a rule edit never reaches a queued row (by design) — so a scheduled send armed
+    before this change re-renders with the deleted column ids and shows a blank date. Only the
+    surgery-outline / missing-docs drips are affected, and only for items already waiting. Drain or
+    accept; new arms are correct.
+  - `test:engine` +7 (84→91): raw vs. split rendering, a non-date column staying blank, date-only
+    with no dangling time clause, midnight as 12:05 AM, and a `{{#subitem}}` block splitting its own
+    date. Live-verified: writing `{date, time}` reads back as `text: "2026-08-07 11:15"`.
+
+**All offline suites pass: `npm test` → 216 checks (ingress 10, engine 91, queue 45, polish 36,
 cutover 9, admin 13, exchange 12).**
 
 **Configurator:** run `npm run dev` (or `npm start`) and open `http://localhost:<PORT>/`, then sign
@@ -750,6 +789,13 @@ refer to that subitem; lets one message describe several subitems) — see `src/
 A `{{#subitem}}` block whose subitem is **not on the item renders nothing** — "not tracked here" is
 not "not done yet", so it must never fall through to `{{else}}`.
 
+Every column is exposed three ways: `{{column.<id>}}` (monday's raw text), plus
+`{{columnDate.<id>}}` → "August 19, 2026" and `{{columnTime.<id>}}` → "11:15 AM" for date columns
+(`src/util/datetime.ts`). A monday Date column holds an optional time of day and prints both at once,
+so the split is what lets one cell fill a "Date: … / Time: …" sentence. A cell with no time yields an
+empty `columnTime`, so guard it: `{{#if columnTime.<id>}} at {{columnTime.<id>}}{{/if}}`. Non-date
+columns yield empty strings for both.
+
 **Scheduled messages are rendered twice**: once when the action is queued (the fallback payload) and
 again from freshly hydrated data just before it sends (`RulesEngine.prepareQueued`). So a delayed
 message describes the item at **send** time — columns, subitem statuses and email recipients are all
@@ -832,6 +878,13 @@ _From `npm run discover` on 2026-06-11. Use these IDs when authoring rules / fix
   values on any of the 75 items) was **deleted by the client on 2026-07-29** and no longer exists.
   **If a group is added/renamed later, add/rename the matching label** — the rule matches on title
   text.
+- **Appointment columns:** `date_mm5xm99g` (Initial Appointment Date) and `date_mm5x7k9w`
+  (Treatment Appointment Date), both type `date` — **created 2026-08-04 by us via the API**,
+  replacing the `timeline` columns `timerange_mm1bdwy2` / `timerange_mm1bg6y2` (migrated, then
+  deleted). monday's Date column is the date **and time** selector; a timeline only holds whole
+  days, which is why the type changed. Hydrated `.text` is `"2026-08-19 11:15"` (or just the date
+  when no time is set) **in the account's timezone**, while the raw `value` is UTC — templates
+  therefore split `.text`, never `value` (see `src/util/datetime.ts`).
 - **Email-bearing columns** (recipient sources): `email_mm5az59s` (Patient Email, type `email` —
   added 2026-07), `text_mm2wm34h` (Referring Provider Email, type `text`).
 - **X-rays column:** `color_mm5fdxvj` (type `status`) — labels `No`=0, `Yes`=1; plus a free-text

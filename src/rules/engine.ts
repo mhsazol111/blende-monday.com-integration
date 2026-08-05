@@ -2,8 +2,15 @@ import { env } from '../config/env.js';
 import { log } from '../util/logger.js';
 import { renderTemplate } from '../util/template.js';
 import { htmlToText, htmlToSlack, looksLikeHtml } from '../util/html.js';
+import { columnDateParts } from '../util/datetime.js';
 import type { NormalizedEvent } from '../events/types.js';
-import { hydrateItem, type Hydrator, type ItemContext, type SubitemSnapshot } from '../monday/hydrate.js';
+import {
+  hydrateItem,
+  type ColumnSnapshot,
+  type Hydrator,
+  type ItemContext,
+  type SubitemSnapshot,
+} from '../monday/hydrate.js';
 import { defaultSenders, type Senders } from '../senders/index.js';
 import { cloneTemplateSubitems, type Cloner } from '../monday/clone.js';
 import {
@@ -863,16 +870,36 @@ function hintsFromEvent(event: NormalizedEvent): RenderHints {
   return {};
 }
 
+/**
+ * Index a column snapshot map three ways: the raw monday text, plus the date and
+ * time halves of a date column so a template can place them separately (see
+ * `columnDateParts`). Non-date columns get empty strings, so `{{columnTime.x}}`
+ * on a status column renders blank rather than something misleading.
+ */
+function indexColumnText(columns: Record<string, ColumnSnapshot>) {
+  const column: Record<string, string> = {};
+  const columnDate: Record<string, string> = {};
+  const columnTime: Record<string, string> = {};
+  for (const [id, snap] of Object.entries(columns)) {
+    column[id] = snap.text;
+    const parts = columnDateParts(snap.text);
+    columnDate[id] = parts.date;
+    columnTime[id] = parts.time;
+  }
+  return { column, columnDate, columnTime };
+}
+
 /** Build the template context from a hydrated item plus the event-derived hints. */
 function contextFrom(item: ItemContext, hints: RenderHints): Record<string, unknown> {
-  const column: Record<string, string> = {};
-  for (const [id, snap] of Object.entries(item.columns)) column[id] = snap.text;
+  const { column, columnDate, columnTime } = indexColumnText(item.columns);
 
   const ctx: Record<string, unknown> = {
     item: { id: item.id, name: item.name },
     group: { id: item.groupId, title: item.groupTitle },
     status: hints.status ?? item.columns['status']?.text ?? '',
     column,
+    columnDate,
+    columnTime,
     // All subitems by name, so templates can scope to a specific one via
     // {{#subitem "Name"}}…{{/subitem}} regardless of the trigger.
     subitems: item.subitems.map((s) => subitemCtx(s, s.name)),
@@ -907,7 +934,6 @@ function keepArmedRecipients(actionType: QueuedActionType, armed: unknown, fresh
 
 /** Shape the `{{subitem.*}}` template context for one subitem (name + columns). */
 function subitemCtx(sub: SubitemSnapshot | undefined, fallbackName: string) {
-  const column: Record<string, string> = {};
-  if (sub) for (const [id, snap] of Object.entries(sub.columns)) column[id] = snap.text;
-  return { name: sub?.name ?? fallbackName, column };
+  const { column, columnDate, columnTime } = indexColumnText(sub?.columns ?? {});
+  return { name: sub?.name ?? fallbackName, column, columnDate, columnTime };
 }

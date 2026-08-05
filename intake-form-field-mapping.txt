@@ -1,0 +1,114 @@
+PATIENT INTAKE FORM -> NP - TESTING BOARD
+Field mapping reference
+Last updated: 2026-08-04
+
+When a patient intake form is submitted, an item is created on the
+"NP - Testing" board. The item is NAMED with the patient's full name
+(First + Last), and the following 9 columns are filled in from the form answers.
+
+Which group the patient lands in depends on the appointment answer (see
+"WHERE THE PATIENT LANDS" below).
+
+Source form board : 18399609338  (Duplicate of Patient Intake Form)
+Destination board : 18403436566  (NP - Testing)
+
+
+--------------------------------------------------------------------------
+WHERE THE PATIENT LANDS
+--------------------------------------------------------------------------
+
+  Appointment? = Yes   ->  NP Intake            (they are already scheduled)
+  anything else        ->  Unscheduled Intake   (No, or left unanswered)
+
+The answer alone decides this. A patient who says Yes but doesn't give a date
+still goes to NP Intake.
+
+Status is set to "Unscheduled" for Unscheduled Intake patients. NP Intake
+patients are left alone — the Status column's own default on the board is
+already "Scheduled", which is correct for them.
+
+That asymmetry is deliberate. An automation listens for Status changing to
+"Scheduled" and clears the item's pending scheduled actions, so writing that
+value explicitly on a brand-new NP Intake patient could wipe the follow-ups
+that had just been queued for them. Letting the column default apply avoids
+raising the event at all.
+
+
+--------------------------------------------------------------------------
+FIELD MAPPING
+--------------------------------------------------------------------------
+
+  FORM FIELD                              ->  BOARD COLUMN            TYPE
+  ------------------------------------------------------------------------
+  First Name                              ->  First Name              Text
+  Last Name                               ->  Last Name               Text
+  Patient email                           ->  Patient Email           Email
+  Location                                ->  Location                Status
+  How do you identify (male, female,      ->  Identify As             Status
+    other)?
+  Medical and financial decision makers   ->  Decision Makers         Long text
+  X-rays                                  ->  X-rays                  Status
+  Xrays more info                         ->  X-rays more info        Long text
+  Appointment Date/Time                   ->  Initial Appointment     Date
+                                                Date                    (+ time)
+
+  (First Name + Last Name are also combined to form the item's name.)
+
+  "Appointment?" is no longer copied to a column of its own — the board column
+  that held it was removed. It now only decides the destination group.
+
+  "Medical conditions" is likewise no longer copied to the item; the Medical
+  History column was removed from the board. The answer is still in the doc.
+
+
+--------------------------------------------------------------------------
+NOTES ON THE DROPDOWN (STATUS) FIELDS
+--------------------------------------------------------------------------
+
+The form and the board use different wording for some choices, so the values
+are translated on the way across:
+
+  Identify As
+    M  or Male    ->  Male
+    F  or Female  ->  Female
+    Other         ->  Other
+
+  X-rays
+    Y or Yes      ->  Yes
+    N or No       ->  No
+    (left blank)  ->  No
+
+  Location
+    NYC / SF / NJ are copied across as-is.
+
+If a form answer doesn't match any of the expected choices, that one column is
+left empty on the new item and a note is written to the server log. The item is
+still created with all of its other fields — one unexpected answer never blocks
+a submission.
+
+
+--------------------------------------------------------------------------
+OTHER BEHAVIOUR WORTH KNOWING
+--------------------------------------------------------------------------
+
+* Empty answers are skipped. A blank form field simply leaves that column
+  empty on the item (the one exception is X-rays, which is recorded as "No"
+  when left blank, as agreed).
+
+* Initial Appointment Date is a Date column and holds the time of day as well,
+  so the appointment time the patient picks on the form is carried across
+  exactly as answered.
+
+  It was a Timeline column until 2026-08-04. A timeline has no time of day, so
+  the time was dropped — and because monday stores date+time in UTC, a late
+  evening appointment was recorded on the following day. Both are now fixed.
+
+* Long-text answers (Decision Makers, X-rays more info) are
+  capped at 2,000 characters, which is monday's own limit for that column type.
+  Anything longer is trimmed and marked with an ellipsis (…). The full answer
+  always remains available in the generated intake document.
+
+* The full form submission is still written to the intake Doc as before —
+  these columns are in addition to it, not a replacement. Fields not listed
+  above (medical questionnaire answers, referral details, etc.) live in the
+  document only.

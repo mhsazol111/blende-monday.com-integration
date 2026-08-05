@@ -107,13 +107,28 @@ function findSubitemClose(s: string, from: number): number {
  * that patient. A block can only describe a subitem the item actually has.
  */
 function scopeForSubitem(context: Record<string, unknown>, name: string): Record<string, unknown> | null {
-  const list = Array.isArray(context.subitems)
-    ? (context.subitems as Array<{ name: string; column: Record<string, string> }>)
-    : [];
+  type SubitemScope = {
+    name: string;
+    column: Record<string, string>;
+    columnDate?: Record<string, string>;
+    columnTime?: Record<string, string>;
+  };
+  const list = Array.isArray(context.subitems) ? (context.subitems as SubitemScope[]) : [];
   const sub = list.find((s) => String(s.name).toLowerCase() === name.toLowerCase());
   if (!sub) return null;
   const column = sub.column ?? {};
-  return { ...context, name: sub.name, column, subitem: { name: sub.name, column } };
+  // The date/time halves are shadowed too, so inside the block every column
+  // lookup — raw or split — reads the subitem, not the parent item.
+  const columnDate = sub.columnDate ?? {};
+  const columnTime = sub.columnTime ?? {};
+  return {
+    ...context,
+    name: sub.name,
+    column,
+    columnDate,
+    columnTime,
+    subitem: { name: sub.name, column, columnDate, columnTime },
+  };
 }
 
 /** Pre-render {{#subitem "Name"}} blocks with the named subitem as the scope. */
