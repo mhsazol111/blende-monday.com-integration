@@ -695,6 +695,43 @@ column. Rules-only — no code change.
     rendering "August 19, 2026 / 11:15 AM"; date cleared → `matched=0`; date set on an item in an
     unrelated group → `matched=0`.
 
+**`Stuck` replaced by `Canceled Appointment` + `Missed Appointment` (2026-08-05):** the client wanted
+the Status label `Stuck` gone and the rule that keyed off it to run for two new labels instead. Board
++ rules, no code change.
+  - **Board:** `Stuck` (was label id **18**) deleted; `Canceled Appointment` (id **18**, reusing the
+    freed slot) and `Missed Appointment` (id **157**) added. No item used `Stuck`, so nothing was
+    orphaned.
+  - **Rule:** `np-intake--on-status-stuck--…` → **`np-intake--on-status-canceled-or-missed--reschedule-plus-48h-72h-followup`**.
+    Trigger was `item_column_changed status value:"Stuck"`; now `item_column_changed` on `status`
+    with **no** value plus two `conditionGroups` (OR) of `column_equals status "<label>"`, so one
+    rule covers both labels. The scoped `clear_pending` that names it was updated in the same pass,
+    and its owner renamed to `np-intake--on-status-scheduled--cancel-reschedule-followups`.
+    Verified offline: both labels → `matched=1 executed=1` (email + the 48h Slack queued);
+    `Working on it` and empty → no match.
+  - **Editing status labels via the API is a minefield — read this before doing it again.**
+    `change_column_metadata` only accepts `title`/`description`; labels go through
+    **`update_status_column(board_id, id, revision, settings: { labels: [...] })`**, which
+    **REPLACES the entire label set** (a partial list silently deletes everything omitted — proven on
+    a throwaway column). Rules learned the hard way:
+    - **Pin every surviving label with `id`.** `index` is the *display position*, not the label id.
+      The first attempt passed `index` only; monday reassigned ids and six labels swapped places,
+      which silently changed one item's visible value (`Pending Pre-Auth` → `Patient Declined`).
+      Re-sending with `id:` restored all 34 exactly. **New labels must OMIT `id`** ("For new labels
+      no id should be provided").
+    - **Colours must be unique across the set**, and are only honoured **when a label is created** —
+      for an id-pinned label the submitted colour is validated but then ignored. Net effect of the
+      failed first attempt: `Pending Pre-Auth`, `Post-Op Report` and `Pending appointment` now share
+      a colour with three other labels. Cosmetic only; **fixable in 3 clicks in the monday UI**
+      (Status column → Edit labels), not via the API short of deleting and recreating those labels
+      (which would change their ids again — not worth it).
+    - The colour argument is an enum (`StatusColumnColors`) whose names do **not** match the legacy
+      `var_name`s in `settings_str` (`grey`→`explosive`, `blue-links`→`dark_blue`,
+      `trolley-grey`→`american_gray`, `yellow`→`egg_yolk`…). Half of them are unguessable. Derive
+      the mapping empirically — create a scratch status column, set 40 labels one per enum value,
+      read `settings_str`, and key on the **hex**. `scratchpad/hex-to-enum.json`.
+  - Backup of the original column (all 35 labels, colours, positions) before any of this:
+    `scratchpad/status-column-backup.json`.
+
 > **`blende-monday.mhsazol.me` is a STAGING server** (confirmed by the client 2026-08-05). The
 > caveats above about draining the queue, in-flight rows keeping a stale render envelope, and
 > pre-rename `queued_actions.rule_id` values are therefore not worth acting on there — redeploy and
@@ -882,8 +919,11 @@ _From `npm run discover` on 2026-06-11. Use these IDs when authoring rules / fix
 
 - **Subitem board:** `18403436575` ("Subitems of NP - Testing"). Linked via parent column
   `subtasks_mm1bpggv` (type `subtasks`).
-- **Status column** (parent): id `status` — labels: `Working on it`=0, `Done`=1, `Stuck`=2,
-  `Scheduled`=5.
+- **Status column** (parent): id `status` — **36 labels** (the 2026-06-11 note here listing four was
+  already stale). The ones rules depend on: `Working on it`=0, `Done`=1, `Scheduled`=5,
+  `Unscheduled`=155, `Canceled Appointment`=18, `Missed Appointment`=157. **`Stuck` was deleted
+  2026-08-05** and replaced by the last two (see §2). Re-run `npm run discover` for the full list —
+  do not trust a hardcoded subset.
 - **Subitem Status column:** id `status` — `Working on it`=0, `Done`=1, `Stuck`=2.
   ⚠️ **Subitems have no checkbox** — "subitem checked off" most likely means subitem Status → `Done`.
 - **People column:** `person` (parent) / `person` (subitem, titled "Owner") — internal ownership, NOT
@@ -1116,8 +1156,8 @@ random form (`generateRuleId()`, `web/app.js`), so rename it by hand.
 | `any-group-move-to-column` | `all-groups--on-move-to-change--move-item-then-clear-column` |
 | `unscheduled-intake-item_entered_group-cpxpf` | `unscheduled-intake--on-item-enter--thanks-plus-48h-72h-followup` |
 | `np-intake-item_entered_group-8hr97` | `np-intake--on-item-enter--consult-invite-plus-welcome-letter-done` (was `…--consult-invite-plus-48h-xray-nudge` until 2026-08-04, when its 48h Slack moved to `np-intake--after-2d--xray-request-slack-if-patient-has-xrays`) |
-| `np-intake-item_column_changed-h2bd2` | `np-intake--on-status-stuck--reschedule-plus-48h-72h-followup` |
-| `np-intake-item_column_changed-nv7s0` | `np-intake--on-status-scheduled--cancel-stuck-followups` |
+| `np-intake-item_column_changed-h2bd2` | `np-intake--on-status-canceled-or-missed--reschedule-plus-48h-72h-followup` |
+| `np-intake-item_column_changed-nv7s0` | `np-intake--on-status-scheduled--cancel-reschedule-followups` |
 | `np-intake-item_in_group_for_days-tw6ry` | `np-intake--after-31d--lead-cool-plus-archive-alert` |
 | `in-office-w-halsey-item_in_group_for_days-uzoap` | `in-office-halsey--after-31d--lead-cool-plus-archive-alert` |
 | `in-office-w-lee-item_in_group_for_days-0l2z7` | `in-office-lee--after-31d--lead-cool-plus-archive-alert` |
