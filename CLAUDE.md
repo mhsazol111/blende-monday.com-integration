@@ -761,6 +761,14 @@ it. Two engine changes plus a rules pass.
     content). **`np-consultation--after-7d--missing-docs-email-plus-1w-3w-alerts` was deliberately
     left alone** (client's call) — it still has its 5 bare `"Done"` checks and its blank lines. It is
     disabled, but if it is ever enabled it will list an `NA` subitem as outstanding.
+  - **Consultation clause repointed to Initial Appointment Date** (same five rules, rules-only): the
+    `post_update` opener read "…at their consultation appointment on `{{columnDate.date_mm5x7k9w}}`",
+    i.e. the **Treatment** date — a consultation is the **Initial** appointment. Swapped to
+    `date_mm5xm99g` (3 refs each: the date + the two `columnTime` halves of the ` at …` clause).
+    Likely fallout from the 2026-08-04 timeline→date migration, which crossed the two ids here.
+    **The other 3 references per rule were deliberately left as Treatment** —
+    `{{#unless column.date_mm5x7k9w}}<li>Schedule surgery</li>{{/unless}}` is correct, since the
+    surgery *is* the treatment appointment. A blanket id swap would have broken it.
   - **Inline conditionals are provably unaffected.** The ruleset holds **241 inline** block tags
     (mid-sentence gender/office-phone/`{{#if columnTime}}` branches) against 438 standalone ones. The
     standalone rule only fires on a line whose entire content is block tags, so an inline tag's line
