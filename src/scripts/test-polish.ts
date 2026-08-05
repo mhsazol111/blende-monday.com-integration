@@ -264,7 +264,7 @@ async function main() {
 
       // Visible in the queue UI: its own terminal status, with a reason, and
       // never re-dispatched.
-      const row = store.listActions()[0];
+      const row = store.listActions().actions[0];
       check('suppressed row has status "suppressed"', row.status === 'suppressed');
       check('suppressed row carries a human-readable reason', !!row.statusReason && /opted out|withheld/i.test(row.statusReason));
       check('suppressed row is terminal (not re-dispatched)', store.dueActions(now + 1_000_000).length === 0);
@@ -289,7 +289,7 @@ async function main() {
       check('queued slack for an opted-out item is suppressed at send time', slacks === 0);
       check('suppressed queued slack counts as suppressed, not sent/failed',
         res.suppressed === 1 && res.sent === 0 && res.failed === 0);
-      const row = store.listActions()[0];
+      const row = store.listActions().actions[0];
       check('suppressed slack row is terminal with a reason',
         row.status === 'suppressed' && /withheld/i.test(row.statusReason ?? ''));
       store.close();

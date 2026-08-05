@@ -120,6 +120,21 @@
       .badge.sent { background: #d8f5e3; color: var(--ok); }
       .badge.cancelled, .badge.failed { background: #fbe0e5; color: var(--danger); }
       .badge.suppressed { background: #ffe6cc; color: #8a5a00; }
+      /* queue selection + pager */
+      .qitem { display: flex; gap: 10px; align-items: flex-start; }
+      .qitem > .qbody { flex: 1; min-width: 0; }
+      .qitem input[type=checkbox] { width: auto; margin: 3px 0 0; flex: 0 0 auto; accent-color: var(--accent); }
+      .qitem.picked { border-color: var(--accent); background: #f6f9ff; }
+      .qbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 0 0 10px; padding: 7px 10px;
+              border: 1px solid var(--bd); border-radius: 8px; background: #fafbfd; font-size: 13px; }
+      .qbar label { display: flex; gap: 6px; align-items: center; margin: 0; font-size: 13px; }
+      .qbar input[type=checkbox] { width: auto; margin: 0; accent-color: var(--accent); }
+      .qbar .sel { color: var(--muted); }
+      .qbar .sel.on { color: var(--accent); font-weight: 600; }
+      .pager { display: flex; gap: 8px; align-items: center; justify-content: flex-end; flex-wrap: wrap;
+               margin-top: 10px; font-size: 13px; color: var(--muted); }
+      .pager button { padding: 5px 10px; }
+      .pager select { width: auto; padding: 4px 6px; font-size: 13px; }
       .qitem .reason { margin-top: 4px; font-size: 12px; color: #8a5a00; background: #fff6e9; border-left: 3px solid #e0a441; padding: 5px 9px; border-radius: 0 6px 6px 0; }
 
       /* searchable combobox */
@@ -221,9 +236,11 @@
             <span class="spacer"></span>
             <button class="link" id="refreshQueue">↻ refresh</button>
           </h2>
-          <p class="hint">Queued emails / Slack / monday writes (relative, absolute, or N-days). Run now, reschedule, or delete.</p>
+          <p class="hint">Queued emails / Slack / monday writes (relative, absolute, or N-days). Run now, reschedule, or delete — tick rows to delete several at once. Filters and counts cover the whole queue, not just the page on screen.</p>
           <div id="queueFilters" class="filterbar"></div>
+          <div id="queueBulk" class="qbar"></div>
           <div id="queueList" class="scrolllist"></div>
+          <div id="queuePager" class="pager"></div>
         </div>
       </section>
 

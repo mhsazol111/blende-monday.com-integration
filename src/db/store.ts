@@ -9,6 +9,9 @@ import type {
   QueuedActionRow,
   QueuedActionType,
   QueuedStatus,
+  QueueFacets,
+  QueuePage,
+  QueueQuery,
   RenderEnvelope,
   Store,
 } from '../queue/types.js';
@@ -154,11 +157,44 @@ export class SqliteStore implements Store {
   }
 
   // ── queue management (admin UI) ────────────────────────────────────────────
-  listActions(limit = 200): QueuedActionRow[] {
+  /**
+   * One page of the queue plus the total matching the filter.
+   *
+   * Filtering is done in SQL rather than in the browser: the list used to fetch
+   * the newest 200 rows and filter them client-side, so once the table passed
+   * 200 an older pending action was invisible in the UI even though the worker
+   * would still fire it. `total` counts matches across the whole table, so the
+   * pager can say "1–50 of 812".
+   */
+  listActions(query: QueueQuery = {}): QueuePage {
+    const limit = Math.min(Math.max(Number(query.limit) || 50, 1), 500);
+    const offset = Math.max(Number(query.offset) || 0, 0);
+    const where: string[] = [];
+    const args: (string | number)[] = [];
+    if (query.status) { where.push('status = ?'); args.push(query.status); }
+    if (query.actionType) { where.push('action_type = ?'); args.push(query.actionType); }
+    if (query.ruleId) { where.push('rule_id = ?'); args.push(query.ruleId); }
+    if (query.itemId != null && !Number.isNaN(query.itemId)) { where.push('item_id = ?'); args.push(query.itemId); }
+    const clause = where.length ? ` WHERE ${where.join(' AND ')}` : '';
+
+    const total = Number(
+      (this.db.prepare(`SELECT COUNT(*) AS n FROM queued_actions${clause}`).get(...args) as any)?.n ?? 0,
+    );
     const rows = this.db
-      .prepare(`SELECT * FROM queued_actions ORDER BY created_at DESC LIMIT ?`)
-      .all(limit) as any[];
-    return rows.map(rowToQueuedAction);
+      .prepare(`SELECT * FROM queued_actions${clause} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`)
+      .all(...args, limit, offset) as any[];
+    return { actions: rows.map(rowToQueuedAction), total, limit, offset };
+  }
+
+  queueFacets(): QueueFacets {
+    const col = (sql: string) => (this.db.prepare(sql).all() as any[]).map((r) => r.v).filter((v) => v != null && v !== '');
+    return {
+      statuses: col(`SELECT DISTINCT status AS v FROM queued_actions ORDER BY v`),
+      actionTypes: col(`SELECT DISTINCT action_type AS v FROM queued_actions ORDER BY v`),
+      ruleIds: col(`SELECT DISTINCT rule_id AS v FROM queued_actions ORDER BY v`),
+      // Newest items first — an operator is nearly always after a recent one.
+      itemIds: col(`SELECT item_id AS v FROM queued_actions GROUP BY item_id ORDER BY MAX(created_at) DESC`).map(Number),
+    };
   }
 
   getAction(id: number): QueuedActionRow | null {
@@ -174,6 +210,15 @@ export class SqliteStore implements Store {
 
   deleteAction(id: number): void {
     this.db.prepare(`DELETE FROM queued_actions WHERE id = ?`).run(id);
+  }
+
+  /** Bulk delete by id. One statement, so a long selection is still one trip. */
+  deleteActions(ids: number[]): number {
+    const clean = [...new Set(ids.map(Number).filter((n) => Number.isInteger(n)))];
+    if (!clean.length) return 0;
+    const placeholders = clean.map(() => '?').join(',');
+    const res = this.db.prepare(`DELETE FROM queued_actions WHERE id IN (${placeholders})`).run(...clean);
+    return Number(res.changes ?? 0);
   }
 
   // ── item group state ───────────────────────────────────────────────────────

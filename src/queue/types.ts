@@ -62,6 +62,33 @@ export interface QueuedActionRow extends QueueEntry {
   sentAt: number | null;
 }
 
+/** Admin queue listing: filters + a page window. Omitted filters match everything. */
+export interface QueueQuery {
+  status?: QueuedStatus;
+  actionType?: string;
+  ruleId?: string;
+  itemId?: number;
+  /** Page size (clamped by the store). */
+  limit?: number;
+  offset?: number;
+}
+
+export interface QueuePage {
+  actions: QueuedActionRow[];
+  /** Rows matching the filter across the whole table — drives the pager. */
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+/** Distinct filter values, so the dropdowns aren't limited to the current page. */
+export interface QueueFacets {
+  statuses: string[];
+  actionTypes: string[];
+  ruleIds: string[];
+  itemIds: number[];
+}
+
 export interface ItemEntry {
   itemId: number;
   boardId: number;
@@ -93,12 +120,21 @@ export interface Store extends EngineStore {
   hasProcessedEvent(eventId: string): boolean;
   markProcessedEvent(eventId: string, at: number): void;
   // ── queue management (admin UI) ──
-  /** Most-recent actions first (all statuses), capped by `limit`. */
-  listActions(limit?: number): QueuedActionRow[];
+  /**
+   * One page of actions, most-recent first, plus the total number of rows
+   * matching the filter (not the page). Filtering happens in SQL so "status =
+   * pending" means every pending row, not just the pending ones that happen to
+   * fall inside the page.
+   */
+  listActions(query?: QueueQuery): QueuePage;
+  /** Distinct values for the admin filter dropdowns, across the whole table. */
+  queueFacets(): QueueFacets;
   getAction(id: number): QueuedActionRow | null;
   /** Reschedule a pending/failed/sent action to a new due time (resets to pending). */
   rescheduleAction(id: number, dueAt: number): void;
   /** Permanently remove an action row. */
   deleteAction(id: number): void;
+  /** Permanently remove several action rows; returns how many were deleted. */
+  deleteActions(ids: number[]): number;
   close(): void;
 }

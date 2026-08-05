@@ -15,7 +15,7 @@ import { adminAuthorized } from './auth.js';
 import { saveRules, validateRuleset } from '../rules/loader.js';
 import type { RulesEngine } from '../rules/engine.js';
 import type { Rule } from '../rules/types.js';
-import type { Store } from '../queue/types.js';
+import type { QueuedStatus, Store } from '../queue/types.js';
 
 /**
  * Configurator backend + static UI (Phase 7).
@@ -183,9 +183,39 @@ export function registerAdmin(app: FastifyInstance, engine?: RulesEngine, store?
   // ── scheduled actions (queue) management ─────────────────────────────────────
   // List queued/sent actions (most recent first) so the UI can show what's
   // pending and let the user run/reschedule/delete each one.
-  app.get('/api/queue', async (_req, reply) => {
-    if (!store) return reply.send({ actions: [] });
-    return { actions: store.listActions() };
+  // Filters are applied in SQL and `total` counts every match, so the pager and
+  // the status filter stay honest however big the table gets.
+  app.get('/api/queue', async (request, reply) => {
+    if (!store) return reply.send({ actions: [], total: 0, limit: 0, offset: 0 });
+    const q = request.query as Record<string, string | undefined>;
+    const itemId = q.item ? Number(q.item) : undefined;
+    return store.listActions({
+      status: (q.status || undefined) as QueuedStatus | undefined,
+      actionType: q.type || undefined,
+      ruleId: q.rule || undefined,
+      itemId: Number.isNaN(itemId) ? undefined : itemId,
+      limit: q.limit ? Number(q.limit) : undefined,
+      offset: q.offset ? Number(q.offset) : undefined,
+    });
+  });
+
+  // Distinct filter values across the whole table (the dropdowns must not be
+  // limited to whatever page is on screen).
+  app.get('/api/queue/facets', async (_req, reply) => {
+    if (!store) return reply.send({ statuses: [], actionTypes: [], ruleIds: [], itemIds: [] });
+    return store.queueFacets();
+  });
+
+  // Bulk delete (the UI's checkbox selection). Ids only — never a filter — so a
+  // mis-set filter can't wipe rows the user never saw.
+  app.post('/api/queue/bulk-delete', async (request, reply) => {
+    if (!adminAuthorized(request)) return reply.code(401).send({ error: 'unauthorized' });
+    if (!store) return reply.code(503).send({ error: 'queue unavailable' });
+    const ids = (request.body as { ids?: unknown } | undefined)?.ids;
+    if (!Array.isArray(ids) || !ids.length) return reply.code(400).send({ error: '`ids` array is required' });
+    const deleted = store.deleteActions(ids as number[]);
+    log.info(`Queue: bulk-deleted ${deleted} action(s).`);
+    return { ok: true, deleted };
   });
 
   // Run a queued action immediately (dispatch now, mark sent).

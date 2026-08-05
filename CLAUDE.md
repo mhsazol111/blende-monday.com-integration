@@ -737,7 +737,32 @@ the Status label `Stuck` gone and the rule that keyed off it to run for two new 
 > pre-rename `queued_actions.rule_id` values are therefore not worth acting on there — redeploy and
 > re-apply rules freely. Revisit before a production instance exists.
 
-**All offline suites pass: `npm test` → 216 checks (ingress 10, engine 91, queue 45, polish 36,
+**Scheduled-actions list: server-side paging, filtering + bulk delete (2026-08-05):** the queue tab
+fetched the newest **200** rows (`listActions(limit = 200)`) and filtered them in the browser, so once
+`queued_actions` passed 200 an older **pending** action was invisible in the UI — while the worker
+still fired it (`dueActions` has no LIMIT, and never did; delivery was never affected). Terminal rows
+(`sent`/`cancelled`/`suppressed`) counted against the 200 too, so history crowded out live rows.
+  - **Store:** `listActions(query?: QueueQuery): QueuePage` — filters (`status`/`actionType`/`ruleId`/
+    `itemId`) and `limit`/`offset` are applied **in SQL**, and `total` counts every match across the
+    table so the pager can say "1–25 of 237". Limit is clamped to 1–500. New `queueFacets()` (distinct
+    values for the dropdowns, table-wide) and `deleteActions(ids)` (one statement, de-duped).
+    `Store` in `src/queue/types.ts` gained `QueueQuery` / `QueuePage` / `QueueFacets`.
+  - **API:** `GET /api/queue?status=&type=&rule=&item=&limit=&offset=` now returns
+    `{actions, total, limit, offset}` (was `{actions}`); new `GET /api/queue/facets`; new
+    `POST /api/queue/bulk-delete {ids:[]}`. Bulk delete takes **ids only, never a filter**, so a
+    mis-set filter can't wipe rows the user never saw.
+  - **UI:** a checkbox per row, a "select all on this page" master tick (indeterminate when partial),
+    a "delete selected (n)" button behind a `confirm()`, and a pager (25/50/100/200 per page, prev /
+    next, "page 4 / 10"). Selection is **page-scoped and cleared on every reload** — a stale tick
+    must not delete a row that scrolled out of view. Changing a filter resets to page 1, and emptying
+    the last page falls back to the new last page instead of stranding you on an empty one.
+  - Verified in a real browser against a seeded 237-row queue: paging, facet-fed filters, select-all,
+    and a bulk delete whose removed ids were captured from the DOM and matched exactly (no collateral
+    rows). `test:queue` +12 (45→57).
+  - **Not addressed:** nothing prunes `queued_actions`, so terminal rows accumulate forever. A
+    retention sweep (delete terminal rows older than N days) is the obvious next step.
+
+**All offline suites pass: `npm test` → 228 checks (ingress 10, engine 91, queue 57, polish 36,
 cutover 9, admin 13, exchange 12).**
 
 **Configurator:** run `npm run dev` (or `npm start`) and open `http://localhost:<PORT>/`, then sign

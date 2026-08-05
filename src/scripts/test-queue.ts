@@ -178,7 +178,7 @@ async function main() {
   {
     const store = new SqliteStore(':memory:');
     store.enqueue({ itemId: 7, ruleId: 'r', actionType: 'slack', payload: { text: 'hi' }, dueAt: future });
-    const all = store.listActions();
+    const all = store.listActions().actions;
     check('listActions returns the queued row', all.length === 1 && all[0].itemId === 7);
     const id = all[0].id;
     check('getAction fetches by id', store.getAction(id)?.ruleId === 'r');
@@ -191,7 +191,7 @@ async function main() {
     check('reschedule resets a sent action back to pending', store.getAction(id)?.status === 'pending');
 
     store.deleteAction(id);
-    check('deleteAction removes the row', store.getAction(id) === null && store.listActions().length === 0);
+    check('deleteAction removes the row', store.getAction(id) === null && store.listActions().actions.length === 0);
     store.close();
   }
 
@@ -204,7 +204,7 @@ async function main() {
     };
     const { store, engine } = harness([rule], () => GROUP_A);
     await engine.handleEvent(entered());
-    const sc = store.listActions().find((a) => a.actionType === 'set_column');
+    const sc = store.listActions().actions.find((a: any) => a.actionType === 'set_column');
     const dueInMin = sc ? Math.round((sc.dueAt - Date.now()) / 60_000) : -1;
     check('set_column scheduled ~30m out (minutes honored)', !!sc && dueInMin >= 29 && dueInMin <= 31);
     check('scheduled set_column not due now', store.dueActions(Date.now()).every((a) => a.actionType !== 'set_column'));
@@ -551,6 +551,62 @@ async function main() {
     const remaining = store2.dueActions(future);
     check('only rule-y survives the scoped clear', remaining.length === 1 && remaining[0].ruleId === 'rule-y');
     store2.close();
+  }
+
+  // N) admin queue listing: SQL paging + filtering + facets + bulk delete.
+  //    Regression: the list used to fetch the newest 200 rows and filter them in
+  //    the browser, so an older pending action was invisible in the UI even
+  //    though the worker would still fire it.
+  {
+    const store = new SqliteStore(':memory:');
+    for (let i = 0; i < 230; i++) {
+      store.enqueue({
+        itemId: 1000 + (i % 4),
+        ruleId: i % 2 ? 'rule-even' : 'rule-odd',
+        actionType: i % 3 === 0 ? 'email' : 'slack',
+        payload: { text: `n${i}` },
+        dueAt: future,
+        dedupeKey: `k${i}`,
+      });
+    }
+    const everything = store.listActions({ limit: 500 });
+    // Mark the 210 NEWEST as sent, leaving the 20 oldest pending — the rows the
+    // old newest-200 window could never show.
+    everything.actions.slice(0, 210).forEach((a) => store.markSent(a.id, Date.now()));
+
+    const page1 = store.listActions({ limit: 25 });
+    check('listActions pages (25 rows, total = whole table)', page1.actions.length === 25 && page1.total === 230);
+    const page2 = store.listActions({ limit: 25, offset: 25 });
+    check('offset returns a different page', page2.actions.length === 25 && page2.actions[0].id !== page1.actions[0].id);
+    const lastPage = store.listActions({ limit: 25, offset: 225 });
+    check('final page is a short page', lastPage.actions.length === 5 && lastPage.total === 230);
+
+    const pending = store.listActions({ status: 'pending', limit: 25 });
+    check('status filter counts every match, not just the newest 200', pending.total === 20);
+    check('filtered page contains only that status', pending.actions.every((a) => a.status === 'pending'));
+
+    const byRule = store.listActions({ ruleId: 'rule-odd', limit: 5 });
+    check('ruleId filter applies in SQL', byRule.total === 115 && byRule.actions.every((a) => a.ruleId === 'rule-odd'));
+    const byItem = store.listActions({ itemId: 1002, limit: 5 });
+    check('itemId filter applies in SQL', byItem.total === 57 && byItem.actions.every((a) => a.itemId === 1002));
+    const combined = store.listActions({ status: 'pending', actionType: 'email', limit: 50 });
+    check('filters combine (AND)', combined.actions.every((a) => a.status === 'pending' && a.actionType === 'email')
+      && combined.total === combined.actions.length);
+
+    const facets = store.queueFacets();
+    check('facets span the whole table, not one page',
+      facets.statuses.join() === 'pending,sent' &&
+      facets.actionTypes.join() === 'email,slack' &&
+      facets.ruleIds.join() === 'rule-even,rule-odd' &&
+      facets.itemIds.length === 4);
+
+    const victims = page1.actions.slice(0, 3).map((a) => a.id);
+    const deleted = store.deleteActions(victims);
+    check('deleteActions removes exactly the given ids',
+      deleted === 3 && victims.every((id) => store.getAction(id) === null) && store.listActions({ limit: 1 }).total === 227);
+    check('deleteActions ignores duplicates and junk ids', store.deleteActions([...victims, NaN as any]) === 0);
+    check('deleteActions on an empty list is a no-op', store.deleteActions([]) === 0);
+    store.close();
   }
 
   console.log(`\n${passed} checks passed.`);

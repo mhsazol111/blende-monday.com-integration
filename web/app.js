@@ -369,8 +369,13 @@ function conditionalSnippets() {
 }
 
 // ── state ────────────────────────────────────────────────────────────────────
-const state = { structure: null, boardId: null, ruleset: { rules: [] }, queue: [] };
+const state = { structure: null, boardId: null, ruleset: { rules: [] }, queue: [], queueFacets: null };
 const queueFilter = { item: '', status: '', type: '', rule: '' };
+// Paging is server-side: `total` is every row matching the filter, not just the
+// page, so the filters mean what they say however large the table grows.
+const queuePage = { offset: 0, size: 25, total: 0 };
+/** Ids ticked for bulk delete. Page-scoped — cleared whenever the list reloads. */
+const queueSelected = new Set();
 const conditionGroups = []; // OR-of-ANDs: each group has its own AND'd condition rows
 const actionRows = [];
 let scopeGroupCombo = null;
@@ -1394,14 +1399,52 @@ async function loadRules() {
 }
 
 // ── scheduled actions (queue) ──────────────────────────────────────────────────
+/** Current filters + page as a query string for /api/queue. */
+function queueQuery() {
+  const p = new URLSearchParams();
+  if (queueFilter.item) p.set('item', queueFilter.item);
+  if (queueFilter.status) p.set('status', queueFilter.status);
+  if (queueFilter.type) p.set('type', queueFilter.type);
+  if (queueFilter.rule) p.set('rule', queueFilter.rule);
+  p.set('limit', String(queuePage.size));
+  p.set('offset', String(queuePage.offset));
+  return p.toString();
+}
+
 async function loadQueue() {
   $('queueList').innerHTML = '<div class="empty"><span class="spinner"></span> loading…</div>';
+  // A reload can change which rows are on screen, so a stale tick could delete
+  // something the user can no longer see. Always start from an empty selection.
+  queueSelected.clear();
   try {
-    const res = await fetch('/api/queue');
-    const data = await res.json();
+    const [pageRes, facetRes] = await Promise.all([
+      fetch('/api/queue?' + queueQuery()),
+      fetch('/api/queue/facets'),
+    ]);
+    const data = await pageRes.json();
     state.queue = Array.isArray(data.actions) ? data.actions : [];
-  } catch { state.queue = []; }
+    queuePage.total = Number(data.total) || 0;
+    state.queueFacets = await facetRes.json().catch(() => null);
+  } catch { state.queue = []; queuePage.total = 0; }
+  // Deleting the last rows of the final page can leave us past the end.
+  if (queuePage.offset && queuePage.offset >= queuePage.total) {
+    queuePage.offset = Math.max(0, (Math.ceil(queuePage.total / queuePage.size) - 1) * queuePage.size);
+    return loadQueue();
+  }
   renderQueue();
+}
+
+/** Jump to a page (offset in rows) and refetch. */
+function gotoQueuePage(offset) {
+  queuePage.offset = Math.max(0, offset);
+  loadQueue();
+}
+
+/** Change a filter: always return to page 1, or the pager lies. */
+function setQueueFilter(key, value) {
+  queueFilter[key] = value;
+  queuePage.offset = 0;
+  loadQueue();
 }
 
 /** A labelled <select>; keeps the current value if still available after a rebuild. */
@@ -1412,31 +1455,113 @@ function filterSelect(labelText, opts, cur, onChange) {
   return el('label', { text: labelText }, [sel]);
 }
 
-function renderQueueFilters(all) {
+/**
+ * Filter dropdowns are built from /api/queue/facets — the distinct values across
+ * the WHOLE table. Building them from the rows on screen would only ever offer
+ * what the current page happens to contain.
+ */
+function renderQueueFilters() {
   const bar = $('queueFilters');
   bar.innerHTML = '';
-  const distinct = (key) => [...new Set(all.map((a) => a[key]).filter((v) => v != null && v !== ''))].sort();
-  const opts = (vals, allLabel) => [{ value: '', label: allLabel }, ...vals.map((v) => ({ value: String(v), label: String(v) }))];
-  bar.appendChild(filterSelect('Item', opts(distinct('itemId'), 'All items'), queueFilter.item, (v) => { queueFilter.item = v; renderQueue(); }));
-  bar.appendChild(filterSelect('Status', opts(['pending', 'sent', 'suppressed', 'cancelled', 'failed'], 'All statuses'), queueFilter.status, (v) => { queueFilter.status = v; renderQueue(); }));
-  bar.appendChild(filterSelect('Action', opts(['email', 'slack', 'set_column'], 'All actions'), queueFilter.type, (v) => { queueFilter.type = v; renderQueue(); }));
-  bar.appendChild(filterSelect('Rule', opts(distinct('ruleId'), 'All rules'), queueFilter.rule, (v) => { queueFilter.rule = v; renderQueue(); }));
+  const f = state.queueFacets || {};
+  const opts = (vals, allLabel) => [{ value: '', label: allLabel },
+    ...(vals || []).map((v) => ({ value: String(v), label: String(v) }))];
+  // A saved filter must stay selectable even if nothing currently matches it.
+  const withCur = (vals, cur) => (cur && !(vals || []).map(String).includes(String(cur)) ? [...(vals || []), cur] : vals);
+  bar.appendChild(filterSelect('Item', opts(withCur(f.itemIds, queueFilter.item), 'All items'), queueFilter.item, (v) => setQueueFilter('item', v)));
+  bar.appendChild(filterSelect('Status', opts(withCur(f.statuses, queueFilter.status), 'All statuses'), queueFilter.status, (v) => setQueueFilter('status', v)));
+  bar.appendChild(filterSelect('Action', opts(withCur(f.actionTypes, queueFilter.type), 'All actions'), queueFilter.type, (v) => setQueueFilter('type', v)));
+  bar.appendChild(filterSelect('Rule', opts(withCur(f.ruleIds, queueFilter.rule), 'All rules'), queueFilter.rule, (v) => setQueueFilter('rule', v)));
+}
+
+/** Select-all + "delete selected", above the list. */
+function renderQueueBulk(rows) {
+  const bar = $('queueBulk');
+  bar.innerHTML = '';
+  if (!rows.length) { bar.classList.add('hidden'); return; }
+  bar.classList.remove('hidden');
+  const n = queueSelected.size;
+  const allTicked = rows.every((a) => queueSelected.has(a.id));
+
+  const master = el('input', { type: 'checkbox' });
+  master.checked = allTicked;
+  // Some-but-not-all reads as indeterminate rather than a misleading tick.
+  master.indeterminate = n > 0 && !allTicked;
+  master.addEventListener('change', () => {
+    rows.forEach((a) => (master.checked ? queueSelected.add(a.id) : queueSelected.delete(a.id)));
+    renderQueue();
+  });
+
+  bar.appendChild(el('label', {}, [master, el('span', { text: ` Select all on this page (${rows.length})` })]));
+  bar.appendChild(el('span', { class: 'sel' + (n ? ' on' : ''), text: n ? `${n} selected` : 'none selected' }));
+  bar.appendChild(el('span', { class: 'spacer' }));
+  const del = el('button', { class: 'danger', text: `🗑 delete selected${n ? ` (${n})` : ''}`, onclick: bulkDeleteQueue });
+  del.disabled = !n;
+  bar.appendChild(del);
+}
+
+/** Page controls. Counts come from the server, so they reflect the whole table. */
+function renderQueuePager() {
+  const bar = $('queuePager');
+  bar.innerHTML = '';
+  const { offset, size, total } = queuePage;
+  if (!total) return;
+  const first = offset + 1;
+  const last = Math.min(offset + size, total);
+  const page = Math.floor(offset / size) + 1;
+  const pages = Math.max(1, Math.ceil(total / size));
+
+  const sizeSel = select([25, 50, 100, 200].map((n) => ({ value: String(n), label: `${n} / page` })));
+  sizeSel.value = String(size);
+  sizeSel.addEventListener('change', () => { queuePage.size = Number(sizeSel.value); queuePage.offset = 0; loadQueue(); });
+
+  const prev = el('button', { text: '‹ prev', onclick: () => gotoQueuePage(offset - size) });
+  const next = el('button', { text: 'next ›', onclick: () => gotoQueuePage(offset + size) });
+  prev.disabled = offset <= 0;
+  next.disabled = last >= total;
+
+  bar.appendChild(sizeSel);
+  bar.appendChild(el('span', { text: `${first}–${last} of ${total}` }));
+  bar.appendChild(prev);
+  bar.appendChild(el('span', { text: `page ${page} / ${pages}` }));
+  bar.appendChild(next);
+}
+
+async function bulkDeleteQueue() {
+  const ids = [...queueSelected];
+  if (!ids.length) return;
+  if (!confirm(`Delete ${ids.length} scheduled action${ids.length > 1 ? 's' : ''}? This cannot be undone.`)) return;
+  try {
+    const res = await fetch('/api/queue/bulk-delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-webhook-secret': secret() },
+      body: JSON.stringify({ ids }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok) { toast(`Deleted ${data.deleted} action${data.deleted === 1 ? '' : 's'}.`, 'ok'); loadQueue(); }
+    else if (res.status === 401) toast('Unauthorized — append ?secret=YOUR_SECRET to the URL.', 'err');
+    else toast(`Bulk delete failed: ${data.error || res.statusText}`, 'err');
+  } catch (err) {
+    toast(`Bulk delete failed: ${err.message}`, 'err');
+  }
 }
 
 function renderQueue() {
   const list = $('queueList');
   list.innerHTML = '';
-  const all = state.queue || [];
-  renderQueueFilters(all);
-  const q = all.filter((a) =>
-    (!queueFilter.item || String(a.itemId) === queueFilter.item) &&
-    (!queueFilter.status || a.status === queueFilter.status) &&
-    (!queueFilter.type || a.actionType === queueFilter.type) &&
-    (!queueFilter.rule || a.ruleId === queueFilter.rule),
-  );
-  $('queueCount').textContent = q.length;
-  if (!all.length) { list.appendChild(el('div', { class: 'empty' }, [el('span', { class: 'big', text: '🗓️' }), 'No scheduled actions yet.'])); return; }
-  if (!q.length) { list.appendChild(el('div', { class: 'empty' }, [el('span', { class: 'big', text: '🔍' }), 'No actions match these filters.'])); return; }
+  // The server already applied the filters and the page window.
+  const q = state.queue || [];
+  const filtered = !!(queueFilter.item || queueFilter.status || queueFilter.type || queueFilter.rule);
+  renderQueueFilters();
+  renderQueueBulk(q);
+  renderQueuePager();
+  $('queueCount').textContent = queuePage.total;
+  if (!q.length) {
+    list.appendChild(filtered
+      ? el('div', { class: 'empty' }, [el('span', { class: 'big', text: '🔍' }), 'No actions match these filters.'])
+      : el('div', { class: 'empty' }, [el('span', { class: 'big', text: '🗓️' }), 'No scheduled actions yet.']));
+    return;
+  }
   q.forEach((a) => {
     const summary = a.actionType === 'email'
       ? `${(a.payload && a.payload.subject) || '(no subject)'} → ${((a.payload && a.payload.to) || []).join(', ')}`
@@ -1465,7 +1590,18 @@ function renderQueue() {
       } }),
       el('button', { class: 'danger', text: 'delete', onclick: () => { if (confirm(`Delete this scheduled ${a.actionType} action (rule ${a.ruleId})?`)) queueAction(a.id, 'delete'); } }),
     ]);
-    list.appendChild(el('div', { class: 'qitem' }, [head, meta, reason, acts].filter(Boolean)));
+    const tick = el('input', { type: 'checkbox' });
+    tick.checked = queueSelected.has(a.id);
+    tick.addEventListener('change', () => {
+      if (tick.checked) queueSelected.add(a.id); else queueSelected.delete(a.id);
+      // Re-render so the bulk bar's count, master tick and row highlight agree.
+      renderQueue();
+    });
+    const row = el('div', { class: 'qitem' + (tick.checked ? ' picked' : '') }, [
+      tick,
+      el('div', { class: 'qbody' }, [head, meta, reason, acts].filter(Boolean)),
+    ]);
+    list.appendChild(row);
   });
 }
 
