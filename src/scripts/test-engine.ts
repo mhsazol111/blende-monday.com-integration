@@ -544,6 +544,22 @@ async function main() {
     check('slack renders <s> as ~strike~', e.slacks[0].text === 'keep ~gone~ done');
   }
 
+  // 16c) a list reaches Slack one bullet per line — no blank line between them —
+  // while paragraphs keep their blank line. The source newline after `</li>` used
+  // to double up with the one `</li>` itself emits.
+  {
+    const rule: Rule = {
+      id: 'bullets', enabled: true, boardId: BOARD, scope: { groupId: GROUP }, trigger: { type: 'item_entered_group' },
+      actions: [{
+        type: 'slack', when: { mode: 'immediate' },
+        text: '<p>Missing:</p>\n<ul>\n<li>one</li>\n<li>two</li>\n</ul>\n<p>Call them.</p>',
+      }],
+    };
+    const e = makeEngine([rule], makeItem());
+    await e.engine.handleEvent(entered(100));
+    check('slack list has no blank line between bullets', e.slacks[0].text === 'Missing:\n\n• one\n• two\n\nCall them.');
+  }
+
   // 17) OR condition groups: the rule matches when ANY group passes (AND within a group).
   {
     const rule: Rule = {
@@ -585,6 +601,59 @@ async function main() {
     check('#ifEquals no-match → else', renderTemplate('{{#ifEquals column.x "Stuck"}}yes{{else}}no{{/ifEquals}}', ctx) === 'no');
     const nested = '{{#if column.x}}A {{#ifEquals subitem.column.z "Done"}}got {{subitem.name}}{{else}}pending{{/ifEquals}}{{/if}}';
     check('nested conditionals + var expansion', renderTemplate(nested, ctx) === 'A got X-ray');
+  }
+
+  // 18a) #ifEquals with SEVERAL values = OR. The missing-docs messages need
+  // "Done or NA counts as handled"; the block syntax has no other way to say it.
+  {
+    const ctx = { column: { s: 'NA', t: 'Pending', u: '' } };
+    const tpl = (path: string) => `{{#ifEquals column.${path} "Done" "NA"}}skip{{else}}LIST{{/ifEquals}}`;
+    check('#ifEquals OR: second value matches', renderTemplate(tpl('s'), ctx) === 'skip');
+    check('#ifEquals OR: no value matches → else', renderTemplate(tpl('t'), ctx) === 'LIST');
+    check('#ifEquals OR: empty column → else', renderTemplate(tpl('u'), ctx) === 'LIST');
+    check(
+      '#ifEquals OR: first value matches',
+      renderTemplate('{{#ifEquals column.s "na" "Done"}}skip{{else}}LIST{{/ifEquals}}', { column: { s: 'Done' } }) === 'skip',
+    );
+    check('#ifEquals single value unchanged', renderTemplate('{{#ifEquals column.s "NA"}}y{{else}}n{{/ifEquals}}', ctx) === 'y');
+    // No value at all still means "is empty" — the pre-existing meaning.
+    check('#ifEquals with no value tests emptiness', renderTemplate('{{#ifEquals column.u}}empty{{else}}set{{/ifEquals}}', ctx) === 'empty');
+  }
+
+  // 18a-ii) a block tag alone on a line takes its newline with it, so a block
+  // laid out readably doesn't leave a blank line above every bullet.
+  {
+    const ctx = { subitems: [
+      { name: 'Meds', column: { status: 'Done' } },
+      { name: 'Forms', column: { status: 'Pending' } },
+    ] };
+    const tpl = [
+      '<ul>',
+      '{{#subitem "Meds"}}',
+      '{{#ifEquals column.status "Done" "NA"}}',
+      '{{else}}',
+      '<li>Meds</li>',
+      '{{/ifEquals}}',
+      '{{/subitem}}',
+      '{{#subitem "Forms"}}',
+      '{{#ifEquals column.status "Done" "NA"}}',
+      '{{else}}',
+      '<li>Forms</li>',
+      '{{/ifEquals}}',
+      '{{/subitem}}',
+      '</ul>',
+    ].join('\n');
+    check('standalone tag lines leave no blank lines', renderTemplate(tpl, ctx) === '<ul>\n<li>Forms</li>\n</ul>');
+    // A line that is genuinely blank in the template is content, and survives.
+    check(
+      'a real blank line is preserved',
+      renderTemplate('<p>a</p>\n\n{{#if column.x}}\n<p>b</p>\n{{/if}}', { column: { x: '1' } }) === '<p>a</p>\n\n<p>b</p>\n',
+    );
+    // A tag sharing its line with text keeps that line's spacing.
+    check(
+      'inline tags keep surrounding text intact',
+      renderTemplate('a {{#if column.x}}b{{/if}} c', { column: { x: '1' } }) === 'a b c',
+    );
   }
 
   // 18b) {{#subitem "Name"}} scope blocks: reference several specific subitems

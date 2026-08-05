@@ -9,8 +9,18 @@
  *   {{#if column.x}}has a value{{else}}empty{{/if}}
  *   {{#unless column.x}}still missing{{/unless}}
  *   {{#ifEquals column.x "Done"}}done!{{else}}not yet{{/ifEquals}}
+ * `ifEquals` accepts SEVERAL quoted values and passes when the column matches
+ * any one of them — the OR the block syntax otherwise lacks:
+ *   {{#ifEquals column.status "Done" "NA"}}nothing to chase{{else}}<li>…</li>{{/ifEquals}}
  * Blocks may be nested. Conditionals are resolved before placeholder
  * substitution, so the chosen branch's {{vars}} are still expanded.
+ *
+ * A block tag that sits ALONE on its own line takes that line with it, so the
+ * newline the tag was formatted on doesn't survive into the message as a blank
+ * line (the Mustache/Handlebars "standalone tag" rule). Without it, a six-tag
+ * block laid out readably leaves six stray newlines behind and every bullet in
+ * the rendered list gets a blank line above it. A line that is genuinely blank
+ * in the template is untouched.
  *
  * And a scoping block to reference a SPECIFIC subitem by name (matched
  * case-insensitively against `context.subitems`). Inside it, {{name}},
@@ -39,9 +49,21 @@ function isTruthy(value: unknown): boolean {
 
 // Matches an INNERMOST block (its body contains no nested `{{#` open tag), so
 // repeated passes resolve nesting from the inside out. The close tag is tied to
-// the open keyword via the \1 backreference.
+// the open keyword via the \1 backreference. The argument list is captured whole
+// (zero or more quoted values) and split by `quotedValues` below.
 const BLOCK_RE =
-  /\{\{#(if|unless|ifEquals)\s+([\w.]+)\s*(?:"([^"]*)")?\s*\}\}((?:(?!\{\{#)[\s\S])*?)\{\{\/\1\}\}/;
+  /\{\{#(if|unless|ifEquals)\s+([\w.]+)\s*((?:"[^"]*"\s*)*)\}\}((?:(?!\{\{#)[\s\S])*?)\{\{\/\1\}\}/;
+
+const QUOTED_RE = /"([^"]*)"/g;
+
+/** The quoted arguments of a block tag, in order. */
+function quotedValues(raw: string): string[] {
+  return [...(raw ?? '').matchAll(QUOTED_RE)].map((m) => m[1]);
+}
+
+function eq(a: unknown, b: string): boolean {
+  return String(a ?? '').trim().toLowerCase() === b.trim().toLowerCase();
+}
 
 export function renderConditionals(tpl: string, context: Record<string, unknown>): string {
   let s = tpl;
@@ -49,12 +71,16 @@ export function renderConditionals(tpl: string, context: Record<string, unknown>
   for (let guard = 0; guard < 1000; guard++) {
     const m = BLOCK_RE.exec(s);
     if (!m) break;
-    const [full, keyword, path, quoted, body] = m;
+    const [full, keyword, path, args, body] = m;
     const value = resolvePath(path, context);
     let pass: boolean;
     if (keyword === 'unless') pass = !isTruthy(value);
-    else if (keyword === 'ifEquals') pass = String(value ?? '').trim().toLowerCase() === (quoted ?? '').trim().toLowerCase();
-    else pass = isTruthy(value); // 'if'
+    else if (keyword === 'ifEquals') {
+      // Several values ⇒ OR. No value at all keeps the old meaning (compare to
+      // the empty string), so `{{#ifEquals column.x}}` still tests "is empty".
+      const wanted = quotedValues(args);
+      pass = wanted.length ? wanted.some((w) => eq(value, w)) : eq(value, '');
+    } else pass = isTruthy(value); // 'if'
 
     // A single top-level {{else}} splits the body (innermost → no nested else).
     // Whitespace-tolerant to match the {{ var }} convention used elsewhere.
@@ -159,8 +185,33 @@ function renderSubitemBlocks(tpl: string, context: Record<string, unknown>): str
   return out;
 }
 
+// ── standalone block tags ───────────────────────────────────────────────────
+// One whole block tag: {{#if …}} {{#unless …}} {{#ifEquals …}} {{#subitem "…"}}
+// {{/if}} {{/unless}} {{/ifEquals}} {{/subitem}} {{else}}. Tag bodies never
+// contain `}`, so `[^}]*` is a safe scan to the closing braces.
+const BLOCK_TAG_SRC =
+  '\\{\\{(?:#(?:if|unless|ifEquals|subitem)[^}]*\\}\\}|/(?:if|unless|ifEquals|subitem)\\}\\}|\\s*else\\s*\\}\\})';
+
+// A line holding nothing but block tags and whitespace. Consuming the trailing
+// newline is what keeps the tag's line out of the output; `$` covers a final
+// line with no newline after it.
+const STANDALONE_LINE_RE = new RegExp(`^[ \\t]*(?:${BLOCK_TAG_SRC}[ \\t]*)+(?:\\r?\\n|$)`, 'gm');
+
+/**
+ * Drop the indentation and the trailing newline of any line that is only block
+ * tags, leaving the tags themselves in place for the renderers below.
+ *
+ * A block tag is punctuation, not content: written on its own line for
+ * legibility, it should cost nothing in the message. Authors lay a subitem block
+ * out over six lines, and every one of those newlines used to survive the tags
+ * disappearing — which is where the blank line above each bullet came from.
+ */
+function stripStandaloneTagLines(tpl: string): string {
+  return tpl.replace(STANDALONE_LINE_RE, (line) => line.trim());
+}
+
 export function renderTemplate(tpl: string, context: Record<string, unknown>): string {
-  const scoped = renderSubitemBlocks(tpl, context);
+  const scoped = renderSubitemBlocks(stripStandaloneTagLines(tpl), context);
   const resolved = renderConditionals(scoped, context);
   return resolved.replace(/\{\{\s*([\w.]+)\s*\}\}/g, (_, path: string) => {
     const value = resolvePath(path, context);

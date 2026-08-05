@@ -358,6 +358,7 @@ function conditionalSnippets() {
   const out = [
     { label: 'if/else', snippet: `{{#if column.${exCol}}}has a value{{else}}empty{{/if}}`, hint: 'Show one of two texts based on whether a column has a value' },
     { label: 'if equals', snippet: `{{#ifEquals column.${exCol} "Done"}}done!{{else}}not yet{{/ifEquals}}`, hint: 'Compare a column value (case-insensitive) and branch' },
+    { label: 'if equals any of', snippet: `{{#ifEquals column.${exCol} "Done" "NA"}}nothing to do{{else}}still open{{/ifEquals}}`, hint: 'List several values — it matches if the column equals ANY of them' },
     { label: 'unless (empty)', snippet: `{{#unless column.${exCol}}}still missing{{/unless}}`, hint: 'Show text only when a column is empty' },
   ];
   if (exSub) {

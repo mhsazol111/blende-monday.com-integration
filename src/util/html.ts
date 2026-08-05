@@ -39,7 +39,12 @@ function blockify(html: string): string {
   return html
     .replace(/<\s*br\s*\/?\s*>/gi, '\n')
     .replace(/<\s*li[^>]*>/gi, '• ')
-    .replace(/<\s*\/\s*(p|div|li|ul|ol|h[1-6]|tr)\s*>/gi, '\n');
+    // `</li>` ends the bullet's line, so it also absorbs the source newline that
+    // normally follows it — otherwise each `</li>\n` yields two newlines and
+    // every bullet in a list arrives with a blank line above it. Paragraph
+    // breaks (`</p>\n\n<p>`) are left alone and still separate with a blank line.
+    .replace(/<\s*\/\s*li\s*>[ \t]*\r?\n?/gi, '\n')
+    .replace(/<\s*\/\s*(p|div|ul|ol|h[1-6]|tr)\s*>/gi, '\n');
 }
 
 const LINK_RE = /<\s*a[^>]*href\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\s*\/\s*a\s*>/gi;

@@ -732,6 +732,54 @@ the Status label `Stuck` gone and the rule that keyed off it to run for two new 
   - Backup of the original column (all 35 labels, colours, positions) before any of this:
     `scratchpad/status-column-backup.json`.
 
+**"Done or NA" + no blank lines between bullets (2026-08-06):** the missing-docs messages listed a
+subitem as outstanding when its status was **NA**, and every bullet arrived with a blank line above
+it. Two engine changes plus a rules pass.
+  - **`{{#ifEquals}}` now takes SEVERAL values** (`src/util/template.ts`): `{{#ifEquals column.status
+    "Done" "NA"}}` passes when the value equals **any** of them — the OR the block syntax otherwise
+    lacked (nesting two `ifEquals` was the only alternative, ×80 sites). `BLOCK_RE` captures the whole
+    argument list and `quotedValues()` splits it; **zero** values keeps the old meaning (compare to
+    the empty string), so `{{#ifEquals column.x}}` still tests "is empty". Single-value blocks are
+    byte-identical to before.
+  - **Standalone block tags take their line with them** (`stripStandaloneTagLines`, run first in
+    `renderTemplate`): a line holding nothing but block tags loses its indentation and trailing
+    newline — the Mustache/Handlebars standalone-tag rule. A readably-formatted 6-line subitem block
+    used to leave 6 stray newlines behind. A line that is **genuinely blank** in the template is
+    content and survives, so paragraph spacing is untouched. Applies to `{{#if}}`/`{{#unless}}`/
+    `{{#ifEquals}}`/`{{#subitem}}`/their closers/`{{else}}`.
+  - **`</li>` absorbs the source newline after it** (`blockify`, `src/util/html.ts`) — this was the
+    *other* half of the blank lines, and template-only fixes could never reach it: `</li>` emits `\n`
+    and the newline that followed it in the HTML survived too, so **every** Slack bullet got a blank
+    line above it regardless of how the template was written. `</p>\n\n<p>` is deliberately left
+    alone, so paragraphs still separate with a blank line. Affects Slack + the email text fallback;
+    the HTML email body is untouched.
+  - **Rules pass** over `config/rules.json`, scoped to the five
+    `*--after-7d--missing-docs-update-plus-1w-3w-alerts` rules **only** (halsey / lee / vu / cpmc /
+    kaiser): all **75** of their `{{#ifEquals column.status "Done"}}` became `"Done" "NA"`, and the
+    blank lines sitting between `{{/subitem}}` and the next block were removed (those are real blank
+    lines in the template, so the standalone-tag rule correctly keeps them — they had to go from the
+    content). **`np-consultation--after-7d--missing-docs-email-plus-1w-3w-alerts` was deliberately
+    left alone** (client's call) — it still has its 5 bare `"Done"` checks and its blank lines. It is
+    disabled, but if it is ever enabled it will list an `NA` subitem as outstanding.
+  - **Inline conditionals are provably unaffected.** The ruleset holds **241 inline** block tags
+    (mid-sentence gender/office-phone/`{{#if columnTime}}` branches) against 438 standalone ones. The
+    standalone rule only fires on a line whose entire content is block tags, so an inline tag's line
+    never matches. Verified by diffing the old engine against the new one over every message in the
+    ruleset — 123 renders × 3 context variants: **51 differed, all whitespace-only, 0 differed in
+    content**; every fully-inline message rendered **byte-identically**, and the same held through
+    `htmlToSlack`.
+  - **Semantics:** only `Done` and `NA` suppress a line. The subitem Status column's other labels —
+    `Pending`, `Partial`, and the blank label — all still list the item as outstanding (confirmed
+    with the client). Matching is case-insensitive but not punctuation-tolerant, so the board label
+    must stay exactly `NA`.
+  - UI: a fourth "if equals any of" snippet chip (`conditionalSnippets`, `web/app.js`).
+  - `test:engine` +10 (91→101): OR match on each value / no match / empty / single-value unchanged /
+    no-value-still-means-empty, standalone lines leaving no blank line, a real blank line surviving,
+    inline tags keeping their spacing, and a Slack list rendering one bullet per line.
+  - **Not yet applied to the deployed instance** — same as the entries above: production reads
+    `/app/data/rules.json` on the Coolify volume. Redeploy the code **and** re-apply the ruleset
+    together; the `</li>` half is code-only and fixes existing Slack messages on redeploy alone.
+
 > **`blende-monday.mhsazol.me` is a STAGING server** (confirmed by the client 2026-08-05). The
 > caveats above about draining the queue, in-flight rows keeping a stale render envelope, and
 > pre-rename `queued_actions.rule_id` values are therefore not worth acting on there — redeploy and
@@ -762,7 +810,7 @@ still fired it (`dueActions` has no LIMIT, and never did; delivery was never aff
   - **Not addressed:** nothing prunes `queued_actions`, so terminal rows accumulate forever. A
     retention sweep (delete terminal rows older than N days) is the obvious next step.
 
-**All offline suites pass: `npm test` → 228 checks (ingress 10, engine 91, queue 57, polish 36,
+**All offline suites pass: `npm test` → 238 checks (ingress 10, engine 101, queue 57, polish 36,
 cutover 9, admin 13, exchange 12).**
 
 **Configurator:** run `npm run dev` (or `npm start`) and open `http://localhost:<PORT>/`, then sign
@@ -872,11 +920,18 @@ item/subitem column's number × a chosen unit, read at event time) | `absolute` 
 
 **Message templating** (email body/subject, Slack text, set_column value) supports `{{dotted.paths}}`
 plus block conditionals: `{{#if path}}…{{else}}…{{/if}}`, `{{#unless path}}…{{/unless}}`,
-`{{#ifEquals path "value"}}…{{/ifEquals}}` (case-insensitive), nestable — and a named-subitem scope
+`{{#ifEquals path "value" ["value2" …]}}…{{/ifEquals}}` (case-insensitive; several values = OR, e.g.
+`{{#ifEquals column.status "Done" "NA"}}`), nestable — and a named-subitem scope
 block `{{#subitem "Exact Name"}}…{{/subitem}}` (inside it `{{name}}`/`{{column.<id>}}`/conditionals
 refer to that subitem; lets one message describe several subitems) — see `src/util/template.ts`.
 A `{{#subitem}}` block whose subitem is **not on the item renders nothing** — "not tracked here" is
 not "not done yet", so it must never fall through to `{{else}}`.
+
+A block tag written **alone on its own line** takes that line with it, so laying a block out
+readably costs nothing in the message; a line that is genuinely blank in the template is content and
+survives. (Before this, a 6-line subitem block left 6 stray newlines and every bullet came out with
+a blank line above it.) A tag that **shares its line with text** — a mid-sentence `{{#ifEquals}}`,
+`{{#if columnTime.x}} at …{{/if}}` — is untouched, spacing included.
 
 Every column is exposed three ways: `{{column.<id>}}` (monday's raw text), plus
 `{{columnDate.<id>}}` → "August 19, 2026" and `{{columnTime.<id>}}` → "11:15 AM" for date columns
@@ -949,7 +1004,10 @@ _From `npm run discover` on 2026-06-11. Use these IDs when authoring rules / fix
   `Unscheduled`=155, `Canceled Appointment`=18, `Missed Appointment`=157. **`Stuck` was deleted
   2026-08-05** and replaced by the last two (see §2). Re-run `npm run discover` for the full list —
   do not trust a hardcoded subset.
-- **Subitem Status column:** id `status` — `Working on it`=0, `Done`=1, `Stuck`=2.
+- **Subitem Status column:** id `status` — verified live 2026-08-06: `Pending`=0, `Done`=1,
+  `Partial`=2, `NA`=3, and a blank label=5. (The old note here said `Working on it`/`Done`/`Stuck`
+  and was stale.) The missing-docs messages treat **`Done` and `NA`** as handled and everything else
+  as outstanding, matching on the label **text** — so don't rename `NA`.
   ⚠️ **Subitems have no checkbox** — "subitem checked off" most likely means subitem Status → `Done`.
 - **People column:** `person` (parent) / `person` (subitem, titled "Owner") — internal ownership, NOT
   a mailing list (its `.text` is a person's *name*). Selectable as a `toFromColumns` source, but the
