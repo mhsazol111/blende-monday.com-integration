@@ -1207,10 +1207,25 @@ function syncJsonFromState() {
   renderRuleList();
 }
 
+/**
+ * Which saved rule the builder is currently pointed at.
+ *
+ * Derived from the Rule ID field rather than remembered from the "edit" click,
+ * because that field is what Save actually keys on (same ID overwrites). So the
+ * highlight always names the rule that would be replaced — type a new ID and it
+ * clears, which is the honest signal that you're now creating a rule.
+ */
+function editingRuleId() {
+  return ($('ruleId').value || '').trim();
+}
+
+let lastEditingId = null;
+
 function renderRuleList() {
   const list = $('ruleList');
   list.innerHTML = '';
   $('ruleCount').textContent = state.ruleset.rules.length;
+  const editing = editingRuleId();
   if (!state.ruleset.rules.length) {
     list.appendChild(el('div', { class: 'empty' }, [el('span', { class: 'big', text: '📋' }), 'No rules yet — build one on the left.']));
     return;
@@ -1225,14 +1240,26 @@ function renderRuleList() {
       class: 'badge ' + (enabled ? 'sent' : 'cancelled'),
       text: enabled ? 'enabled' : 'disabled',
     });
+    const isEditing = !!editing && r.id === editing;
     const meta = el('div', {}, [
-      el('div', {}, [badge, el('strong', { text: ' ' + r.id })]),
+      el('div', {}, [
+        badge,
+        el('strong', { text: ' ' + r.id }),
+        ...(isEditing ? [el('span', { class: 'editing-chip', text: '✎ editing' })] : []),
+      ]),
       el('div', {}, [el('span', { class: 'hint', text: `${trigLabel} · ${scopeLabel(r)} · ${(r.actions || []).length} action(s)` })]),
     ]);
     const edit = el('button', { class: 'link', text: 'edit', onclick: () => loadRuleIntoBuilder(r) });
     const del = el('button', { class: 'danger', text: 'delete', onclick: () => deleteRule(i) });
-    list.appendChild(el('div', { class: 'rule-item' }, [meta, el('div', {}, [edit, del])]));
+    const row = el('div', { class: 'rule-item' + (isEditing ? ' editing' : '') }, [meta, el('div', {}, [edit, del])]);
+    list.appendChild(row);
+    // Reveal it only when the target changed — scrolling on every keystroke
+    // would fight the user. Scroll the list itself, never the page.
+    if (isEditing && editing !== lastEditingId) {
+      list.scrollTop = Math.max(0, row.offsetTop - list.offsetTop - 8);
+    }
   });
+  lastEditingId = editing;
 }
 
 /** One-step save: build the rule, upsert, persist to server (rollback on fail). */
@@ -1292,6 +1319,10 @@ function loadRuleIntoBuilder(rule) {
   $('actions').innerHTML = '';
   (rule.actions || []).forEach((a) => { const row = makeActionRow(a); actionRows.push(row); $('actions').appendChild(row.node); });
   renumberActions();
+
+  // Mark the row in the list so it's obvious which rule the builder is holding
+  // (the toast fades; the highlight doesn't).
+  renderRuleList();
 
   // No scrollIntoView here: the builder sits alongside the rule list, so scrolling
   // to it just moved the list out from under the cursor. The toast is the feedback.
@@ -1640,7 +1671,10 @@ function init() {
   $('loadBoard').addEventListener('click', loadBoard);
   $('connectBtn').addEventListener('click', connectBoard);
   $('refreshQueue').addEventListener('click', loadQueue);
-  $('genRuleId').addEventListener('click', () => { $('ruleId').value = generateRuleId(); });
+  $('genRuleId').addEventListener('click', () => { $('ruleId').value = generateRuleId(); renderRuleList(); });
+  // Keep the "editing" highlight in step with the ID field: retyping the ID
+  // means Save now targets a different rule, so the list must say so.
+  $('ruleId').addEventListener('input', renderRuleList);
   $('addGroup').addEventListener('click', () => { conditionGroups.push(makeConditionGroup()); renderConditionGroups(); });
   $('addAction').addEventListener('click', () => { const r = makeActionRow(); actionRows.push(r); $('actions').appendChild(r.node); renumberActions(); });
   $('saveRule').addEventListener('click', saveRule);
