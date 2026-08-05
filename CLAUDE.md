@@ -1269,6 +1269,7 @@ random form (`generateRuleId()`, `web/app.js`), so rename it by hand.
 | `hospital-cpmc-subitem-set-6gowk` | `hospital-cpmc--on-treatment-date-set--surgery-outline-update` |
 | `hospital-kaiser-subitem-set-hagpy` | `hospital-kaiser--on-treatment-date-set--surgery-outline-update` |
 | `post-surgery-subitem-set-wnzr6` | `post-surgery--on-second-visit-done--recall-slack-after-delay` |
+| `archive-column-changed-dhk10` | `archive--on-status-done--recall-slack-after-delay` _(renamed 2026-08-06; added after the original pass, so it still carried a generated id. Nothing referenced it and no queued rows used it.)_ |
 
 The rename was a one-shot script (not committed). `config/rules.live.json` is an untracked snapshot
 of the **pre-rename** live ruleset, and `config/rules.json.bak` the local pre-rename backup.
