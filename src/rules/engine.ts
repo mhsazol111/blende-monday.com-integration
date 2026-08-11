@@ -1,7 +1,7 @@
 import { env } from '../config/env.js';
 import { log } from '../util/logger.js';
 import { renderTemplate } from '../util/template.js';
-import { htmlToText, htmlToSlack, looksLikeHtml } from '../util/html.js';
+import { htmlToText, htmlToSlack, looksLikeHtml, htmlForMondayUpdate } from '../util/html.js';
 import { columnDateParts } from '../util/datetime.js';
 import type { NormalizedEvent } from '../events/types.js';
 import {
@@ -353,7 +353,10 @@ export class RulesEngine {
       await this.columnWriter(p);
     } else if (actionType === 'post_update') {
       const p = payload as { itemId: number; body: string };
-      await this.updateWriter(p);
+      // Fix monday's newline→<br> quirk here, at the last point before the API,
+      // so it also covers rows queued before this shipped (whose stored payload
+      // is sent as-armed when a send-time re-render can't run).
+      await this.updateWriter({ ...p, body: htmlForMondayUpdate(p.body) });
     } else if (actionType === 'move_item_to_group') {
       const p = payload as { boardId: number; itemId: number; group: string };
       // The mover resolves the destination (id or title) and skips a move to the

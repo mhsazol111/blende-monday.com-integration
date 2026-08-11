@@ -375,6 +375,59 @@ async function main() {
     check('post_update skips when named subitem absent', updates.length === 0 && r.matched === 1);
   }
 
+  // 10c) post_update strips the source newlines monday would turn into <br>.
+  // Templates are authored with newlines between block tags for readability;
+  // monday renders each one as a literal <br>, so an outline arrived with two
+  // blank lines between paragraphs and a stray break above every bullet.
+  {
+    const updates: any[] = [];
+    const post = async (body: string) => {
+      updates.length = 0;
+      const rules: Rule[] = [{
+        id: 'r', enabled: true, boardId: BOARD, scope: { groupId: GROUP },
+        trigger: { type: 'item_entered_group' },
+        actions: [{ type: 'post_update', when: { mode: 'immediate' }, body } as any],
+      }];
+      await new RulesEngine({
+        rules,
+        senders: { async sendEmail() {}, async sendSlack() {} },
+        updateWriter: async (a) => { updates.push(a); },
+        hydrate: async () => makeItem({}),
+      }).handleEvent(entered(100));
+      return updates[0]?.body;
+    };
+
+    check(
+      'post_update drops newlines between block tags',
+      (await post('<p>One</p>\n\n<p>Two</p>')) === '<p>One</p><p>Two</p>',
+    );
+    check(
+      'post_update drops the newline before every <li>',
+      (await post('<ul>\n<li>A</li>\n<li>B</li>\n</ul>')) === '<ul><li>A</li><li>B</li></ul>',
+    );
+    // A newline inside running text is what a browser collapses to one space —
+    // the multi-line <small> signature must not become two lines in the Update
+    // when the same HTML renders as one line in the email.
+    check(
+      'post_update collapses a newline inside text to one space',
+      (await post('<p>Blende Dental Group\n390 Laurel Street</p>')) === '<p>Blende Dental Group 390 Laurel Street</p>',
+    );
+    check(
+      'post_update keeps explicit <br> and single spaces',
+      (await post('<p>Date: X <br>Time: Y</p>')) === '<p>Date: X <br>Time: Y</p>',
+    );
+    // A body with no markup has nothing but newlines for structure, so monday's
+    // \n → <br> is exactly right there and must be left alone.
+    check(
+      'post_update leaves a plain-text body untouched',
+      (await post('Line one\nLine two')) === 'Line one\nLine two',
+    );
+    check(
+      'post_update leaves whitespace-significant markup untouched',
+      (await post('<pre>a\n  b</pre>')) === '<pre>a\n  b</pre>',
+    );
+  }
+
   // 11) action isolation: a throwing action must not abort the rest of the rule.
   {
     const writes: any[] = [];

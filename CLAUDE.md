@@ -818,7 +818,52 @@ still fired it (`dueActions` has no LIMIT, and never did; delivery was never aff
   - **Not addressed:** nothing prunes `queued_actions`, so terminal rows accumulate forever. A
     retention sweep (delete terminal rows older than N days) is the obvious next step.
 
-**All offline suites pass: `npm test` → 238 checks (ingress 10, engine 101, queue 57, polish 36,
+**`post_update` no longer inherits monday's newline→`<br>` (2026-08-11):** every Update posted by a
+`post_update` action arrived with two blank lines between paragraphs and a stray break above every
+bullet. Cause: **monday's `create_update` renders each newline in the submitted body as a literal
+`<br>`**, which a browser would have collapsed as insignificant whitespace. Our templates are
+authored with newlines between block tags for readability, so `</p>\n\n<p>` reached the board as
+`</p><br><br><p>` and `<ul>\n<li>` broke every list. Measured on the real CPMC surgery outline:
+monday was injecting **66** `<br>`s where the template asks for **6**.
+  - **Fix:** `htmlForMondayUpdate` (`src/util/html.ts`) restores browser whitespace semantics before
+    the body is sent — a newline **between two tags** disappears, a newline **inside running text**
+    collapses to one space, explicit `<br>` and existing spaces are untouched. Guarded by
+    `looksLikeHtml` (a plain-text body's newlines ARE its line breaks, so monday's `<br>` is right
+    there) and by a `<pre>`/`<textarea>` bail-out.
+  - **Applied in `dispatch`, not `renderAction`** — the last point before the monday API, so it also
+    covers rows queued before this shipped, whose stored payload is sent as-armed when the send-time
+    re-render can't run. No queue drain and **no rule edits**: every existing post_update template is
+    fixed by the redeploy alone.
+  - Visible side effect: the multi-line `<small>` signature becomes one wrapped line — which is how
+    that same HTML already renders in the email path. Authors wanting a hard break must use `<br>`.
+  - The 2026-08-06 `</li>` fix did NOT cover this: that one lives in `blockify` (Slack / email text
+    fallback), and `post_update` posts HTML **verbatim** without passing through it.
+  - `test:engine` +6 (101→107).
+
+> **Investigated & closed 2026-08-11 — a report of "Date: ⟨blank⟩ / Time: Start time is ⟨blank⟩
+> please arrive" in a surgery outline is NOT a live bug.** The current template's
+> `{{#if columnTime.…}}…{{else}}Please arrive{{/if}}` guard makes that output unreachable (verified by
+> rendering the real rule body against date+time / date-only / column-absent contexts). Scanning every
+> Update on the board for "Start time is" found 8, and they date the fixes: **2026-07-09** ones show
+> the reported blank-blank line, **2026-07-13** shows `Date: 2026-07-14 / Time: … 2026-07-14` (the
+> pre-split single-variable bug), and everything from **2026-08-05** renders correctly. Old Updates
+> never re-render, so they persist on the item indefinitely — deleting them is the only cleanup, and
+> that's a board-data decision. **When triaging a message complaint, check the update's `created_at`
+> before touching the rule.**
+
+> **OPEN QUESTION — the surgery outline shows "6:00 AM" (2026-08-11).** For the same date cell monday
+> returns a stored `value` of `13:00:00` and an API `text` of `06:00` — exactly the account's UTC
+> offset apart (`America/Los_Angeles`, −7). `columnDateParts` reads **`text`**, so 6:00 AM is what
+> ships. **Both readings of this fit the data identically** and the API cannot distinguish them:
+> either the UI shows 1:00 PM and `text` is shifting (code bug — switch `indexColumnText` to the raw
+> `value`), or the UI shows 6:00 AM, `text` is right, and someone entered 6 AM (data). **Do not
+> "fix" this without checking the board first.** The decisive item is `12727563330` (Testing NP
+> Intake 3): stored `2026-08-07 05:00`, text `2026-08-06 22:00` — a different **calendar day**, so
+> whichever date the cell displays settles it. A controlled write (set a known time in the UI, read
+> the raw value back) is the fallback test. Also note `docs`/§5's claim that `text` is "already
+> rendered in the account's timezone" is the assumption under question here.
+
+**All offline suites pass: `npm test` → 244 checks (ingress 10, engine 107, queue 57, polish 36,
 cutover 9, admin 13, exchange 12).**
 
 **Configurator:** run `npm run dev` (or `npm start`) and open `http://localhost:<PORT>/`, then sign

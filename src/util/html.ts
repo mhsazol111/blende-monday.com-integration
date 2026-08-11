@@ -69,6 +69,35 @@ export function htmlToSlack(input: string): string {
   return collapseBlankLines(decodeEntities(s));
 }
 
+/**
+ * Prepare an HTML body for a monday **Update** (`create_update`).
+ *
+ * monday's update renderer turns every newline in the submitted body into a
+ * literal `<br>`, which a browser would have collapsed as insignificant
+ * whitespace. Our templates are authored with newlines between block tags for
+ * readability, so `</p>\n\n<p>` arrived as `</p><br><br><p>` — a paragraph gap
+ * plus two blank lines — and `<ul>\n<li>` put a stray break above every bullet.
+ *
+ * This restores browser whitespace semantics before the body is sent: a newline
+ * between two tags is insignificant and disappears, a newline inside running
+ * text collapses to a single space. Explicit `<br>` and spaces already in the
+ * markup are untouched, so nothing an author *asked* for is lost — and the
+ * Update now renders like the same HTML does in the email path.
+ *
+ * Only applied to markup: a plain-text body has no tags, so its newlines are
+ * the author's only line breaks and monday's `\n`→`<br>` is exactly right.
+ * Whitespace-significant elements bail out for the same reason.
+ */
+const PREFORMATTED_RE = /<\s*(pre|textarea)\b/i;
+
+export function htmlForMondayUpdate(input: string): string {
+  if (!looksLikeHtml(input) || PREFORMATTED_RE.test(input)) return input;
+  return input
+    .replace(/>[ \t]*\r?\n[ \t\r\n]*</g, '><') // between tags: insignificant
+    .replace(/[ \t]*\r?\n[ \t\r\n]*/g, ' ') // inside text: one space
+    .trim();
+}
+
 /** HTML to plain text (links become "text (url)"); the email text fallback. */
 export function htmlToText(input: string): string {
   if (!looksLikeHtml(input)) return input;
