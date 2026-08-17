@@ -2,7 +2,7 @@ import { env } from '../config/env.js';
 import { log } from '../util/logger.js';
 import { renderTemplate } from '../util/template.js';
 import { htmlToText, htmlToSlack, looksLikeHtml, htmlForMondayUpdate } from '../util/html.js';
-import { columnDateParts } from '../util/datetime.js';
+import { columnDateParts, hourColumnTime } from '../util/datetime.js';
 import type { NormalizedEvent } from '../events/types.js';
 import {
   hydrateItem,
@@ -875,9 +875,11 @@ function hintsFromEvent(event: NormalizedEvent): RenderHints {
 
 /**
  * Index a column snapshot map three ways: the raw monday text, plus the date and
- * time halves of a date column so a template can place them separately (see
- * `columnDateParts`). Non-date columns get empty strings, so `{{columnTime.x}}`
- * on a status column renders blank rather than something misleading.
+ * time halves so a template can place them separately (see `columnDateParts`).
+ *
+ * An **hour** column contributes only a time, a **date** column a date and
+ * possibly a time. Every other type gets empty strings, so `{{columnTime.x}}` on
+ * a status column renders blank rather than something misleading.
  */
 function indexColumnText(columns: Record<string, ColumnSnapshot>) {
   const column: Record<string, string> = {};
@@ -885,6 +887,11 @@ function indexColumnText(columns: Record<string, ColumnSnapshot>) {
   const columnTime: Record<string, string> = {};
   for (const [id, snap] of Object.entries(columns)) {
     column[id] = snap.text;
+    if (snap.type === 'hour') {
+      columnDate[id] = '';
+      columnTime[id] = hourColumnTime(snap.text, snap.value);
+      continue;
+    }
     const parts = columnDateParts(snap.text);
     columnDate[id] = parts.date;
     columnTime[id] = parts.time;

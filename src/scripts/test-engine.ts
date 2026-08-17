@@ -1097,6 +1097,56 @@ async function main() {
     check('subitem block splits the subitem’s own date', slacks[0]?.text === 'August 19, 2026 at 3:45 PM');
   }
 
+  // 24d) An HOUR column feeds {{columnTime}}. This is where the appointment times
+  // live: an hour value carries NO timezone, so what the coordinator typed is what
+  // the patient reads — unlike a date column, whose value is an absolute instant.
+  {
+    const rules: Rule[] = [{
+      id: 'appt-hour', enabled: true, boardId: BOARD, scope: { groupId: GROUP },
+      trigger: { type: 'item_entered_group' },
+      actions: [{
+        type: 'slack', when: { mode: 'immediate' },
+        text: 'Date: {{columnDate.appt}} Time: {{columnTime.at}} | date-half={{columnDate.at}}',
+      }],
+    }];
+    const { engine, slacks } = makeEngine(rules, makeItem({
+      columns: {
+        appt: { text: '2026-08-19', value: '{"date":"2026-08-19"}', type: 'date' },
+        at: { text: '04:05 PM', value: '{"hour":16,"minute":5}', type: 'hour' },
+      },
+    }));
+    await engine.handleEvent(entered(100));
+    check('an hour column fills {{columnTime}}', slacks[0]?.text.includes('Time: 4:05 PM'));
+    check('a date-only column keeps its date half', slacks[0]?.text.includes('Date: August 19, 2026'));
+    check('an hour column has no date half', slacks[0]?.text.endsWith('date-half='));
+  }
+
+  // 24e) The hour is read from `value`, which is format-independent: monday's
+  // `text` follows the account's 12/24-hour setting, so trusting it would let that
+  // setting quietly change every rendered message.
+  {
+    const rules: Rule[] = [{
+      id: 'appt-hour-fmt', enabled: true, boardId: BOARD, scope: { groupId: GROUP },
+      trigger: { type: 'item_entered_group' },
+      actions: [{ type: 'slack', when: { mode: 'immediate' }, text: '{{columnTime.at}}' }],
+    }];
+    const at = async (text: string, value: string | null) => {
+      const { engine, slacks } = makeEngine(rules, makeItem({
+        columns: { at: { text, value, type: 'hour' } },
+      }));
+      await engine.handleEvent(entered(100));
+      return slacks[0]?.text;
+    };
+    check('24-hour account text still renders 12-hour', await at('16:05', '{"hour":16,"minute":5}') === '4:05 PM');
+    check('midnight is 12:00 AM, not 0:00', await at('12:00 AM', '{"hour":0,"minute":0}') === '12:00 AM');
+    check('noon is 12:00 PM, not 0:00 PM', await at('12:00 PM', '{"hour":12,"minute":0}') === '12:00 PM');
+    check('minutes keep their leading zero', await at('09:05 AM', '{"hour":9,"minute":5}') === '9:05 AM');
+    // No value (or unparseable) falls back to the text rather than dropping the time.
+    check('falls back to text when value is missing', await at('04:05 PM', null) === '4:05 PM');
+    check('falls back to text when value is junk', await at('04:05 PM', 'not json') === '4:05 PM');
+    check('an empty hour column renders blank', await at('', null) === '');
+  }
+
   console.log(`\n${passed} checks passed.`);
 }
 

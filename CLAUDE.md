@@ -851,19 +851,91 @@ monday was injecting **66** `<br>`s where the template asks for **6**.
 > that's a board-data decision. **When triaging a message complaint, check the update's `created_at`
 > before touching the rule.**
 
-> **OPEN QUESTION — the surgery outline shows "6:00 AM" (2026-08-11).** For the same date cell monday
-> returns a stored `value` of `13:00:00` and an API `text` of `06:00` — exactly the account's UTC
-> offset apart (`America/Los_Angeles`, −7). `columnDateParts` reads **`text`**, so 6:00 AM is what
-> ships. **Both readings of this fit the data identically** and the API cannot distinguish them:
-> either the UI shows 1:00 PM and `text` is shifting (code bug — switch `indexColumnText` to the raw
-> `value`), or the UI shows 6:00 AM, `text` is right, and someone entered 6 AM (data). **Do not
-> "fix" this without checking the board first.** The decisive item is `12727563330` (Testing NP
-> Intake 3): stored `2026-08-07 05:00`, text `2026-08-06 22:00` — a different **calendar day**, so
-> whichever date the cell displays settles it. A controlled write (set a known time in the UI, read
-> the raw value back) is the fallback test. Also note `docs`/§5's claim that `text` is "already
-> rendered in the account's timezone" is the assumption under question here.
+> **RESOLVED — the "6:00 AM" / shifted appointment time is NOT a bug (2026-08-12).** It is a
+> timezone gap between where a time is **entered** and where it is **read**, and `columnDateParts`
+> is correct as written. Settled with a controlled test on item `12784031569`:
+>
+> | picked in the monday UI | stored `value` (UTC) | API `text` | message |
+> |---|---|---|---|
+> | Aug 21, 09:00 AM | `{"date":"2026-08-21","time":"03:00:00"}` | `2026-08-20 20:00` | Aug 20, 8:00 PM |
+> | Aug 21, 03:00 PM | `{"date":"2026-08-21","time":"09:00:00"}` | `2026-08-21 02:00` | Aug 21, 2:00 AM |
+>
+> - **Write side = the entering user's BROWSER timezone, not their monday profile.** Both writes are
+>   `local − 6`, i.e. the developer's machine (`Asia/Dhaka`, UTC+6) — while the acting monday user
+>   (`14868491`, Joshua Beckerman) has profile `America/New_York` (−4). The picker follows the
+>   browser; don't reason from `users { time_zone_identifier }`.
+> - **Read side = UTC−7 (`America/Los_Angeles`)**, consistent across every filled date cell on the
+>   board (`09:00→02:00`, `13:00→06:00`, `05:00→22:00` prev day). That matches the **token owner's**
+>   profile (`Storytellers`, `storytellers@dentistsondemand.com`). §5's "rendered in the account's
+>   timezone" is therefore right in effect, but the setting that drives it is the token owner's
+>   profile — a distinction that matters if the token is ever re-issued from another user.
+> - +6 − (−7) = the **13-hour** shift seen in testing. It is an artifact of testing from Bangladesh;
+>   an LA coordinator entering 9:00 AM stores 16:00 UTC and the message says 9:00 AM. The old
+>   `12727939214` "6:00 AM" datapoint is the same thing: entered 7:00 PM Dhaka → `13:00:00` UTC →
+>   `06:00` Pacific.
+> - **Do NOT "fix" this by switching `indexColumnText` to the raw `value`** — that is UTC and would
+>   be wrong for everyone.
+> - **Known residual risk (accepted, not a defect):** 7 users on the account are `America/New_York`
+>   (Carla, Joshua, Ashley, Julia, Nitika, Laura, Dhawal). One of them booking "9:00 AM" from an East
+>   Coast browser produces a **6:00 AM** patient email. Whether that's wrong is a process question
+>   (did they mean 9 AM Pacific or 9 AM local?), not a code one.
+> - **Optional hardening, deliberately NOT done:** the render timezone is currently whatever the
+>   token owner's monday profile says, so changing that profile would silently shift every
+>   appointment time in every message with no deploy. Pinning it (format the raw UTC `value` through
+>   `Intl.DateTimeFormat` with an explicit `PRACTICE_TIMEZONE=America/Los_Angeles`) would make it
+>   immune. It would not change today's output and would not address the residual risk above.
+> - Still true from 2026-08-11: **old Updates never re-render**, so check an update's `created_at`
+>   before blaming the current rule.
 
-**All offline suites pass: `npm test` → 244 checks (ingress 10, engine 107, queue 57, polish 36,
+**Appointment TIME moved to timezone-free Hour columns (2026-08-17):** the client approved the fix
+for the 2026-08-12 timezone finding — appointment times now live in monday **Hour** columns and the
+Date columns hold **only the day**. This removes the timezone from the appointment path entirely,
+rather than pinning a rendering timezone.
+  - **Why an Hour column settles it.** Its value is `{"hour":16,"minute":5}` with **no timezone**:
+    stored exactly as typed, read back identically by everyone. A Date column's value is an absolute
+    UTC instant, so its displayed time depends both on the **browser** that entered it and on the
+    **token owner's** monday profile that renders it — the 13-hour shift in §2's 2026-08-12 entry.
+    A date-only Date cell is `{"date":"2026-08-21"}` → text `"2026-08-21"`, also unshifted (verified
+    live), so the date half is safe where it is.
+  - **`PRACTICE_TIMEZONE` / the render pin is NOT needed and was not built.** All 25 `{{columnTime}}`
+    references in the ruleset pointed at these two columns and nothing else, so after the split there
+    is no place left where a time is rendered out of a UTC instant. Don't reintroduce it.
+  - **New columns** (created via API, see §5): `hour_mm6a44` (Initial Appointment Time) and
+    `hour_mm6azhzm` (Treatment Appointment Time), pairing with `date_mm5xm99g` / `date_mm5x7k9w`.
+  - **11 existing cells migrated** from the **displayed `text`**, never from `value` — 3 of them
+    (e.g. `2026-08-21 22:00`, whose value date is `2026-08-22`) would have moved a day if migrated
+    from the UTC value. Backup of every filled cell in the scratchpad
+    (`appointment-values-backup.json`), and the script that did it (`migrate-appt-time.mjs`, dry-run
+    by default).
+  - **Engine:** `indexColumnText` (`src/rules/engine.ts`) branches on `snap.type === 'hour'` and
+    calls the new **`hourColumnTime`** (`src/util/datetime.ts`), which reads `value` in preference
+    to `text` — `text` follows the account's 12/24-hour setting, so trusting it would let that
+    setting silently change every message. An hour column yields `{{columnTime.<id>}}` and an empty
+    `{{columnDate.<id>}}`. `columnDateParts` is unchanged for date columns; `subitemCtx` and the
+    `{{#subitem}}` shadow go through the same function, so subitem hour columns work too.
+  - **Rules:** the 25 `columnTime.date_*` references were repointed to the hour ids; the 13
+    `columnDate.*` ones stay on the Date columns, and the 17 `{{#if column.date_…}}` /
+    `{{#unless column.date_…}}` existence checks are unaffected (the date is still there). Verified
+    the edit was surgical — rule ids identical and the JSON differs **only** in those 25 tokens.
+  - **Intake form (`page-monday-intake-doc-2.php`) splits on write too.**
+    `appointment_date_value()` → **`appointment_datetime_values($text, $rawJson)`**, returning the
+    date and time halves for `$DEST_APPT_DATE_COL` + the new `$DEST_APPT_TIME_COL`. It reads the
+    source column's rendered **`text`**, not `value`, for the same reason the migration did. ⚠️ **The
+    WP page must be redeployed** or the form keeps writing `{date, time}` into the Date column.
+  - **Client-facing consequence:** an Hour column makes DST irrelevant for appointment times — there
+    is no offset to adjust. The residual risk in the 2026-08-12 entry (an East-Coast browser booking
+    "9:00 AM" and the patient reading 6:00 AM) is **gone** for the time; only a near-midnight entry
+    could still roll the *date*, and only if someone re-adds a time to the Date column.
+  - Verified live end-to-end: the real ruleset rendered against real items — CPMC `Someone new` →
+    "Date: August 21, 2026 / Time: Start time is **10:00 PM**", Vu → 8:30 PM, Lee → 6:00 AM (all
+    matching the board), and a treatment date with no time still falls to "Please arrive one and a
+    half hours early" via the `{{#if columnTime}}` guard.
+  - `test:engine` +10 (107→117). UI: hour columns get a `(time)` variable chip.
+  - **Not yet applied to the deployed instance** — `config/rules.json` is gitignored and production
+    reads `/app/data/rules.json`. Redeploy the code and re-apply the ruleset together, along with
+    the 2026-08-04 / 08-06 rules-only backlog above.
+
+**All offline suites pass: `npm test` → 254 checks (ingress 10, engine 117, queue 57, polish 36,
 cutover 9, admin 13, exchange 12).**
 
 **Configurator:** run `npm run dev` (or `npm start`) and open `http://localhost:<PORT>/`, then sign
@@ -987,11 +1059,13 @@ a blank line above it.) A tag that **shares its line with text** — a mid-sente
 `{{#if columnTime.x}} at …{{/if}}` — is untouched, spacing included.
 
 Every column is exposed three ways: `{{column.<id>}}` (monday's raw text), plus
-`{{columnDate.<id>}}` → "August 19, 2026" and `{{columnTime.<id>}}` → "11:15 AM" for date columns
-(`src/util/datetime.ts`). A monday Date column holds an optional time of day and prints both at once,
-so the split is what lets one cell fill a "Date: … / Time: …" sentence. A cell with no time yields an
-empty `columnTime`, so guard it: `{{#if columnTime.<id>}} at {{columnTime.<id>}}{{/if}}`. Non-date
-columns yield empty strings for both.
+`{{columnDate.<id>}}` → "August 19, 2026" and `{{columnTime.<id>}}` → "4:05 PM"
+(`src/util/datetime.ts`). A **date** column fills `columnDate` (and `columnTime` too, if someone set
+a time on it); an **hour** column fills only `columnTime`; every other type yields empty strings for
+both. The split is what lets a "Date: … / Time: …" sentence draw each half from the right place —
+**appointment date and time are two separate columns**, because an hour column stores the time with
+no timezone attached (see §5). An unset cell yields an empty string, so guard it:
+`{{#if columnTime.<id>}} at {{columnTime.<id>}}{{/if}}`.
 
 **Scheduled messages are rendered twice**: once when the action is queued (the fallback payload) and
 again from freshly hydrated data just before it sends (`RulesEngine.prepareQueued`). So a delayed
@@ -1081,13 +1155,24 @@ _From `npm run discover` on 2026-06-11. Use these IDs when authoring rules / fix
   values on any of the 75 items) was **deleted by the client on 2026-07-29** and no longer exists.
   **If a group is added/renamed later, add/rename the matching label** — the rule matches on title
   text.
-- **Appointment columns:** `date_mm5xm99g` (Initial Appointment Date) and `date_mm5x7k9w`
-  (Treatment Appointment Date), both type `date` — **created 2026-08-04 by us via the API**,
-  replacing the `timeline` columns `timerange_mm1bdwy2` / `timerange_mm1bg6y2` (migrated, then
-  deleted). monday's Date column is the date **and time** selector; a timeline only holds whole
-  days, which is why the type changed. Hydrated `.text` is `"2026-08-19 11:15"` (or just the date
-  when no time is set) **in the account's timezone**, while the raw `value` is UTC — templates
-  therefore split `.text`, never `value` (see `src/util/datetime.ts`).
+- **Appointment columns — a date column PLUS an hour column, since 2026-08-17:**
+  | what | column | type | template var |
+  |---|---|---|---|
+  | Initial Appointment Date | `date_mm5xm99g` | `date` | `{{columnDate.date_mm5xm99g}}` |
+  | Initial Appointment Time | `hour_mm6a44` | `hour` | `{{columnTime.hour_mm6a44}}` |
+  | Treatment Appointment Date | `date_mm5x7k9w` | `date` | `{{columnDate.date_mm5x7k9w}}` |
+  | Treatment Appointment Time | `hour_mm6azhzm` | `hour` | `{{columnTime.hour_mm6azhzm}}` |
+
+  The two `date` columns were **created 2026-08-04 by us via the API**, replacing the `timeline`
+  columns `timerange_mm1bdwy2` / `timerange_mm1bg6y2` (migrated, then deleted). The two `hour`
+  columns were **created 2026-08-17**, and the times were migrated out of the date columns, which
+  now hold **only the day** — an `hour` value (`{"hour":16,"minute":5}`) carries no timezone, while
+  a date column's value is an absolute UTC instant whose displayed time depends on who entered it
+  and who is reading it (see §2, 2026-08-12 and 2026-08-17).
+  **Don't put a time back on the Date columns.** The engine ignores it (`columnTime` for these now
+  comes from the hour columns), and a late-evening time can roll the stored date to the next day.
+  Hydrated `.text`: `"2026-08-19"` for the date, `"04:05 PM"` for the hour — but the hour is
+  rendered from `value`, so the account's 12/24-hour setting can't change a message.
 - **Email-bearing columns** (recipient sources): `email_mm5az59s` (Patient Email, type `email` —
   added 2026-07), `text_mm2wm34h` (Referring Provider Email, type `text`).
 - **X-rays column:** `color_mm5fdxvj` (type `status`) — labels `No`=0, `Yes`=1; plus a free-text

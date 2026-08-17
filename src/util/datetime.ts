@@ -1,16 +1,22 @@
 /**
- * Splitting a monday date column into display parts.
+ * Turning monday's date and hour columns into display parts.
  *
- * A monday Date column holds an optional time of day, and its hydrated `text`
- * comes back as `"2026-08-19 11:15"` (or `"2026-08-19"` when no time is set).
- * That single string is wrong in a sentence that wants one or the other —
- * "Date: 2026-08-19 11:15 / Time: 2026-08-19 11:15" — so templates get
- * `{{columnDate.<id>}}` and `{{columnTime.<id>}}` alongside the raw
- * `{{column.<id>}}`.
+ * Templates get `{{columnDate.<id>}}` and `{{columnTime.<id>}}` alongside the raw
+ * `{{column.<id>}}`, because one string is wrong in a sentence that wants one or
+ * the other — "Date: 2026-08-19 11:15 / Time: 2026-08-19 11:15".
  *
- * The parts are derived from `text`, never from the column's raw `value`: the
- * value stores UTC, while `text` is already rendered in the monday account's
- * timezone, which is the clock the practice and the patient both read.
+ * Two column types feed those maps:
+ *
+ * - **Date** (`columnDateParts`) — hydrated `text` is `"2026-08-19 11:15"`, or
+ *   just `"2026-08-19"` when no time is set. Parts come from `text`, never from
+ *   the raw `value`: value stores UTC, while `text` is rendered in the monday
+ *   account's timezone.
+ * - **Hour** (`hourColumnTime`) — `{"hour":16,"minute":5}`, with **no timezone
+ *   at all**: the time is stored exactly as it was typed. This is why the
+ *   appointment times live here rather than on the Date column, where the value
+ *   is an absolute instant whose displayed time depends on who is looking at it
+ *   (and on which browser it was entered from). An hour column has no date half,
+ *   so `{{columnDate.<hourId>}}` is empty — pair it with its Date column.
  */
 
 export interface ColumnDateParts {
@@ -46,8 +52,47 @@ export function columnDateParts(text: string): ColumnDateParts {
   const date = `${monthName} ${Number(day)}, ${year}`;
   if (hour === undefined) return { date, time: '' };
 
-  const h = Number(hour);
-  const suffix = h < 12 ? 'AM' : 'PM';
-  const hour12 = h % 12 === 0 ? 12 : h % 12;
-  return { date, time: `${hour12}:${minute} ${suffix}` };
+  return { date, time: clockTime(Number(hour), Number(minute)) };
+}
+
+/** 24-hour pieces → "4:05 PM". The one place the display format is decided. */
+function clockTime(hour: number, minute: number): string {
+  if (!Number.isFinite(hour) || !Number.isFinite(minute)) return '';
+  const suffix = hour < 12 ? 'AM' : 'PM';
+  const hour12 = hour % 12 === 0 ? 12 : hour % 12;
+  return `${hour12}:${String(minute).padStart(2, '0')} ${suffix}`;
+}
+
+/** `text` of an hour column: "04:05 PM", or "16:05" on a 24-hour account. */
+const HOUR_TEXT = /^(\d{1,2}):(\d{2})(?:\s*([AaPp])\.?[Mm])?/;
+
+/**
+ * The `{{columnTime.<id>}}` value for an hour column, as "4:05 PM".
+ *
+ * Read from `value` (`{"hour":16,"minute":5}`) in preference to `text`, since
+ * that is unambiguous — `text` follows the account's 12/24-hour setting, so
+ * changing that setting would otherwise change every rendered message.
+ */
+export function hourColumnTime(text: string, value?: string | null): string {
+  if (value) {
+    try {
+      const v = JSON.parse(value) as { hour?: unknown; minute?: unknown };
+      if (typeof v?.hour === 'number') return clockTime(v.hour, typeof v.minute === 'number' ? v.minute : 0);
+    } catch {
+      // Fall through to the text form rather than dropping the time.
+    }
+  }
+
+  const m = HOUR_TEXT.exec((text ?? '').trim());
+  if (!m) return '';
+  const [, rawHour, minute, meridiem] = m;
+
+  let hour = Number(rawHour);
+  if (meridiem) {
+    const pm = meridiem.toLowerCase() === 'p';
+    hour = hour % 12; // 12 AM is hour 0, 12 PM is hour 12.
+    if (pm) hour += 12;
+  }
+  if (hour > 23) return '';
+  return clockTime(hour, Number(minute));
 }

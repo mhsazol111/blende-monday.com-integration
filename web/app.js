@@ -338,6 +338,14 @@ function availableVariables() {
         hint: `{{columnTime.${c.id}}} — ${c.title}, time only (11:15 AM); blank when no time is set`,
       });
     }
+    // An Hour column is a time of day on its own, with no timezone — appointment
+    // times live here, paired with a date-only Date column.
+    if (c.type === 'hour') {
+      cols.push({
+        label: `${c.title} (time)`, token: `{{columnTime.${c.id}}}`,
+        hint: `{{columnTime.${c.id}}} — ${c.title} (4:05 PM); blank when unset`,
+      });
+    }
   }
   const subs = subCols().length
     ? [{ label: 'subitem: name', token: '{{subitem.name}}', hint: '{{subitem.name}} — triggering subitem name (subitem rules)' }].concat(
