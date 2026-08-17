@@ -1171,6 +1171,11 @@ _From `npm run discover` on 2026-06-11. Use these IDs when authoring rules / fix
   and who is reading it (see §2, 2026-08-12 and 2026-08-17).
   **Don't put a time back on the Date columns.** The engine ignores it (`columnTime` for these now
   comes from the hour columns), and a late-evening time can roll the stored date to the next day.
+  **The clock icon in the date picker cannot be removed** (asked 2026-08-17): monday's Date column
+  has no date-only mode, its `settings_str` is `{}`, `ColumnProperty` exposes only `title` and
+  `description`, and there is no `update_date_column` mutation — only status/dropdown have settings
+  mutations. Mitigated with column **descriptions** instead (rewritten 2026-08-17; the old ones
+  dated from the timeline→date migration and actively told people to use the clock icon).
   Hydrated `.text`: `"2026-08-19"` for the date, `"04:05 PM"` for the hour — but the hour is
   rendered from `value`, so the account's 12/24-hour setting can't change a message.
 - **Email-bearing columns** (recipient sources): `email_mm5az59s` (Patient Email, type `email` —
