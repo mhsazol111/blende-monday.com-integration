@@ -435,7 +435,7 @@ export class RulesEngine {
   async prepareQueued(
     row: Pick<QueuedActionRow, 'ruleId' | 'itemId' | 'actionType' | 'payload' | 'render'>,
     opts: { recheckConditions?: boolean } = {},
-  ): Promise<{ fire: boolean; payload: unknown }> {
+  ): Promise<{ fire: boolean; payload: unknown; reason?: string }> {
     const asArmed = { fire: true, payload: row.payload };
     const rule = this.rules.find((r) => r.id === row.ruleId);
     const gate = (opts.recheckConditions ?? true) && this.needsConditionRecheck(rule);
@@ -449,7 +449,9 @@ export class RulesEngine {
     }
     if (!item) return asArmed;
 
-    if (gate && !conditionsPass(rule!, item, {})) return { fire: false, payload: row.payload };
+    if (gate && !conditionsPass(rule!, item, {})) {
+      return { fire: false, payload: row.payload, reason: explainConditionFailure(rule!, item) };
+    }
     if (!row.render) return asArmed;
 
     try {
@@ -824,6 +826,68 @@ function conditionsPass(rule: Rule, item: ItemContext, ctx: ConditionContext): b
       : [];
   if (groups.length === 0) return true;
   return groups.some((conds) => conds.every((c) => conditionPass(c, item, ctx)));
+}
+
+/**
+ * Human-readable "why the gate said no", shown by the configurator's run-now
+ * button so a manual test of a rule visibly demonstrates its condition working
+ * instead of silently contradicting it.
+ *
+ * Conditions are OR-of-ANDs, so a failure means EVERY group had at least one
+ * failing condition. Reporting all of them is noise, so we report the group that
+ * came closest (fewest failures) — for the common single-group rule that is just
+ * "the conditions that don't hold".
+ */
+function explainConditionFailure(rule: Rule, item: ItemContext): string {
+  const groups: Condition[][] = rule.conditionGroups?.length
+    ? rule.conditionGroups.map((g) => g.conditions ?? [])
+    : rule.conditions?.length
+      ? [rule.conditions]
+      : [];
+  let closest: string[] | null = null;
+  for (const conds of groups) {
+    const failed = conds.filter((c) => !conditionPass(c, item, {})).map((c) => describeCondition(c, item));
+    if (!closest || failed.length < closest.length) closest = failed;
+  }
+  return closest?.length ? closest.join('; ') : `the rule's conditions do not hold for item ${item.id}`;
+}
+
+/** One failing condition, phrased as "what was expected vs. what the board says". */
+function describeCondition(c: Condition, item: ItemContext): string {
+  const found = (columnId: string) => JSON.stringify(item.columns[columnId]?.text ?? '');
+  // A named subitem may simply not exist on the item — say so rather than "".
+  const subitemFound = (name: string | undefined, columnId: string) => {
+    const matches = name
+      ? item.subitems.filter((s) => s.name.toLowerCase() === name.toLowerCase())
+      : item.subitems;
+    if (!matches.length) return 'no such subitem on this item';
+    return matches.map((s) => JSON.stringify(s.columns[columnId]?.text ?? '')).join(' / ');
+  };
+  switch (c.type) {
+    case 'status_is':
+      return `column ${c.columnId} is ${found(c.columnId)}, expected ${JSON.stringify(c.label)}`;
+    case 'column_equals':
+      return `column ${c.columnId} is ${found(c.columnId)}, expected ${JSON.stringify(c.value)}`;
+    case 'status_is_not':
+      return `column ${c.columnId} must not be ${JSON.stringify(c.label)}, but it is`;
+    case 'column_not_equals':
+      return `column ${c.columnId} must not be ${JSON.stringify(c.value)}, but it is`;
+    case 'column_empty':
+      return `column ${c.columnId} must be empty, but it is ${found(c.columnId)}`;
+    case 'column_not_empty':
+      return `column ${c.columnId} must have a value, but it is empty`;
+    case 'in_group':
+      return `item must be in group ${c.groupId}, but it is in ${item.groupId}`;
+    case 'moved_from_group':
+      // Only ever true on a live move event; a queued re-check has no such context.
+      return `condition "moved from ${c.groupId}" cannot hold outside the original move`;
+    case 'subitem_checked':
+      return `subitem ${JSON.stringify(c.subitemName ?? '(any)')} is ${subitemFound(c.subitemName, c.columnId)}, expected ${JSON.stringify(c.label)}`;
+    case 'subitem_not_checked':
+      return `subitem ${JSON.stringify(c.subitemName ?? '(any)')} must not be ${JSON.stringify(c.label)}, but it is`;
+    default:
+      return 'a condition does not hold';
+  }
 }
 
 function conditionPass(c: Condition, item: ItemContext, ctx: ConditionContext): boolean {

@@ -3,6 +3,11 @@ import { existsSync, rmSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { buildServer } from '../server.js';
 import { env } from '../config/env.js';
+import { RulesEngine } from '../rules/engine.js';
+import { SqliteStore } from '../db/store.js';
+import type { ItemContext } from '../monday/hydrate.js';
+import type { Senders, SlackMessage } from '../senders/index.js';
+import type { Rule } from '../rules/types.js';
 
 /**
  * Offline verification of the configurator backend (static UI + rules API)
@@ -85,7 +90,83 @@ async function main() {
     if (existsSync(resolve(env.rulesPath))) rmSync(resolve(env.rulesPath));
   }
 
+  await runNowConditionGate();
+
   console.log(`\n${passed} checks passed.`);
+}
+
+/**
+ * "Run now" must apply the SAME fire-time condition gate as the worker, so a
+ * manual test of a gated rule demonstrates the condition instead of bypassing
+ * it. `force: true` is the deliberate override.
+ */
+async function runNowConditionGate() {
+  const GATED_RULE: Rule = {
+    id: 'timed-gated-rule',
+    enabled: true,
+    boardId: 1,
+    scope: { groupId: 'group_a' },
+    trigger: { type: 'item_in_group_for_days', days: 2 },
+    conditionGroups: [{ conditions: [{ type: 'column_equals', columnId: 'xrays', value: 'Yes' }] }],
+    actions: [{ type: 'slack', when: { mode: 'immediate' }, text: 'request x-rays' }],
+  };
+
+  let xrays = 'No';
+  const item = (): ItemContext => ({
+    id: 500,
+    boardId: 1,
+    name: 'Test Patient',
+    groupId: 'group_a',
+    groupTitle: 'NP Intake',
+    columns: { xrays: { text: xrays, value: null, type: 'color' } },
+    subitems: [],
+    people: {},
+  });
+
+  const store = new SqliteStore(':memory:');
+  const slacks: SlackMessage[] = [];
+  const senders: Senders = { async sendEmail() {}, async sendSlack(m) { slacks.push(m); } };
+  const engine = new RulesEngine({ rules: [GATED_RULE], store, senders, hydrate: async () => item() });
+  const app = buildServer(engine, store);
+
+  const enqueue = () =>
+    store.enqueue({
+      itemId: 500,
+      ruleId: GATED_RULE.id,
+      actionType: 'slack',
+      payload: { text: 'request x-rays' },
+      dueAt: Date.now() + 2 * 86_400_000, // not due for two days
+    });
+
+  try {
+    enqueue();
+    const first = store.listActions().actions[0];
+
+    // ── condition does NOT hold (X-rays = "No") ──────────────────────────────
+    let res = await app.inject({ method: 'POST', url: `/api/queue/${first.id}/run`, headers: auth, payload: {} });
+    check('run now on a gated rule whose condition fails → skipped, not sent',
+      res.statusCode === 200 && res.json().skipped === true && slacks.length === 0);
+    check('the skip explains which column blocked it',
+      /xrays/.test(res.json().reason) && /"No"/.test(res.json().reason) && /"Yes"/.test(res.json().reason));
+    check('a skipped action stays pending (it is not cancelled)',
+      store.getAction(first.id)?.status === 'pending');
+
+    // ── the deliberate override ──────────────────────────────────────────────
+    res = await app.inject({ method: 'POST', url: `/api/queue/${first.id}/run`, headers: auth, payload: { force: true } });
+    check('run now with force:true overrides the gate and sends',
+      res.statusCode === 200 && res.json().skipped !== true && slacks.length === 1);
+    check('the forced send is marked sent', store.getAction(first.id)?.status === 'sent');
+
+    // ── condition DOES hold (X-rays = "Yes") ─────────────────────────────────
+    xrays = 'Yes';
+    enqueue();
+    const second = store.listActions({ status: 'pending' }).actions[0];
+    res = await app.inject({ method: 'POST', url: `/api/queue/${second.id}/run`, headers: auth, payload: {} });
+    check('run now sends normally once the condition holds',
+      res.statusCode === 200 && res.json().skipped !== true && slacks.length === 2);
+  } finally {
+    await app.close();
+  }
 }
 
 main().catch((err) => {

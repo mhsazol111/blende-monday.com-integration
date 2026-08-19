@@ -38,6 +38,7 @@ export async function runDueActions(
       // as it is NOW, so a message queued days ago doesn't describe a stale board.
       const prep = await engine.prepareQueued(row);
       if (!prep.fire) {
+        log.info(`Queued action ${row.id} (rule ${row.ruleId}, item ${row.itemId}) skipped — ${prep.reason}`);
         store.markCancelled(row.id);
         skipped++;
         continue;

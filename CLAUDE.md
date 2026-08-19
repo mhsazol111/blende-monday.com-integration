@@ -922,6 +922,8 @@ rather than pinning a rendering timezone.
     date and time halves for `$DEST_APPT_DATE_COL` + the new `$DEST_APPT_TIME_COL`. It reads the
     source column's rendered **`text`**, not `value`, for the same reason the migration did. ⚠️ **The
     WP page must be redeployed** or the form keeps writing `{date, time}` into the Date column.
+    _(Superseded 2026-08-18 — the form now asks for the time in its own Hour column, so the function
+    takes four arguments and reads two source columns; see the next entry.)_
   - **Client-facing consequence:** an Hour column makes DST irrelevant for appointment times — there
     is no offset to adjust. The residual risk in the 2026-08-12 entry (an East-Coast browser booking
     "9:00 AM" and the patient reading 6:00 AM) is **gone** for the time; only a near-midnight entry
@@ -935,8 +937,75 @@ rather than pinning a rendering timezone.
     reads `/app/data/rules.json`. Redeploy the code and re-apply the ruleset together, along with
     the 2026-08-04 / 08-06 rules-only backlog above.
 
-**All offline suites pass: `npm test` → 254 checks (ingress 10, engine 117, queue 57, polish 36,
-cutover 9, admin 13, exchange 12).**
+**Intake form now COLLECTS date and time separately (2026-08-18):** the client split the form's
+single "Appointment Date/Time" question into two — **"Appointment Date"** (`datepwp1q8hp`, the same
+date column, with its time picker switched off: `is_date_with_time: false` in the form view's
+settings) and **"Appointment Time"** (`hourt4d7dyjt`, a new **Hour** column). Both questions are
+optional and share the same show-if rule. `page-monday-intake-doc-2.php` was reading only the date
+column and splitting its text, so the time half would have come back `null` on every new submission
+and the destination Hour column would never have been written again.
+  - **`appointment_datetime_values($dateText, $dateRaw, $hourText, $hourRaw)`** now takes both source
+    columns, with a new **`hour_column_value($text, $rawJson)`** helper. The two halves are read from
+    **opposite** places, for one reason: a date column's `value` is a UTC instant so its **`text`** is
+    the trustworthy day, while an hour column's `text` is formatted through the account's 12/24-hour
+    setting so its **`value`** (`{"hour":16,"minute":5}`) is the trustworthy time. Same rule as
+    `hourColumnTime` in `src/util/datetime.ts` — keep them in step.
+  - **Precedence:** the Hour answer always wins. A time still embedded in the date answer is kept
+    only as a last-resort fallback, so the 21 legacy rows (and a form whose time picker got switched
+    back on) still parse correctly. Verified over 13 cases incl. midnight/noon, 12h and 24h `text`
+    fallbacks, malformed JSON, and legacy-vs-hour precedence.
+  - **This closes the residual timezone risk** left open by the 2026-08-12 and 2026-08-17 entries.
+    The patient now types the time into a field that has no timezone, instead of into a date+time
+    picker whose UTC instant was computed by *their browser*. A date-only date cell is
+    `{"date":"2026-09-15"}` — also not an instant. So the appointment path is timezone-free **end to
+    end**, from form entry to rendered message, and the "East-Coast browser books 9:00 AM, patient
+    reads 6:00 AM" case is gone rather than merely narrowed.
+  - **Board titles are now misleading — go by the form's question text.** `datepwp1q8hp` is still
+    titled "Appointment Date/Time" on the board and `hourt4d7dyjt` is titled just "Hour".
+  - ⚠️ **The WP page must be redeployed.** Until it is, a new submission writes the date and drops
+    the time.
+  - ⚠️ **Two orphan columns** were left on the intake board by the editing session: `dateebp4jweq`
+    and `date5un6j3p9`, both `date`, both titled "Date", both absent from the form and empty on all
+    73 items. Safe to delete on the board; nothing reads them.
+
+**"Run now" now honors the rule's conditions (2026-08-19):** the client reported the NP Intake x-ray
+Slack still arriving for patients whose **X-rays** column says `No`. **The rule was never at fault** —
+`np-intake--after-2d--xray-request-slack-if-patient-has-xrays` is correct and correctly deployed
+(verified against `/api/rules` on the live instance), and the queue proves the gate works: every
+x-ray action that reached its due date on its own was **sent** only for `Yes` items
+(12727475164, 12821808528, 12821816076) and **cancelled** for every `No`/empty one (12727480458,
+12727490125, 12727563330, 12709437564, 12721368923, 12784031569, 12821843804).
+  - **The real cause was the configurator's "run now" button.** It called
+    `prepareQueued(action, { recheckConditions: false })` — i.e. it deliberately **skipped the
+    condition gate** — so force-running a queued action on a `No` item sent the Slack anyway. The
+    client uses that button constantly to avoid waiting 2 days: **70 of the queue's sent rows have
+    `sentAt` earlier than `dueAt`**, two of them x-ray Slacks on `No` items (12839737251 armed
+    04:09:18 / sent 04:16:47 for a due date two days later; 12728389653 on 2026-08-05).
+  - **Fix:** run-now now runs the **same** gate as the worker, so testing a rule demonstrates its
+    condition instead of contradicting it. `POST /api/queue/:id/run` takes `{force?: boolean}`;
+    without it a blocked action returns **`{ok:true, skipped:true, reason}`** at **HTTP 200** (an
+    external caller treating 200 as "delivered" must now check `skipped`). The UI shows the reason in
+    a `confirm()` and offers **"Send anyway"**, which re-POSTs with `force:true` (the old behavior).
+  - **A skipped action is deliberately left `pending`, not `markCancelled`ed** (unlike the worker at
+    the real due date) — declining an early manual send must not destroy the schedule.
+  - **`prepareQueued` gained an optional `reason`**, built by `explainConditionFailure` /
+    `describeCondition` (`src/rules/engine.ts`): with OR groups it reports the group that came
+    *closest* (fewest failures), phrased as expected-vs-found, e.g. `column color_mm5fdxvj is "No",
+    expected "Yes"`. The worker logs it too when it cancels at the due date.
+  - **Blast radius is small:** the gate only applies where `needsConditionRecheck` is true —
+    `item_in_group_for_days` rules **that have conditions**, which is 7 of the 14 deployed timed
+    rules. Everything else (the 31-day alerts, all relative/absolute sends off instant triggers,
+    `set_column`, `post_update`) is untouched, and a queue row whose `rule_id` no longer exists still
+    fires as before. The opt-out `suppressed` path is separate (inside `dispatch`) and unchanged;
+    `skipped` returns before dispatch, so the two can't collide.
+  - In practice only the x-ray rule is visibly affected — the missing-docs rules' OR groups pass
+    whenever any document is outstanding, so run-now on those still sends.
+  - `test:admin` +6 (13→19). Verified in a real browser end-to-end: run-now on real item
+    `12839620953` (X-rays `No`) → confirm dialog with the reason, decline → amber toast + row stays
+    `PENDING`; "Send anyway" → bypasses the gate and reaches dispatch.
+
+**All offline suites pass: `npm test` → 260 checks (ingress 10, engine 117, queue 57, polish 36,
+cutover 9, admin 19, exchange 12).**
 
 **Configurator:** run `npm run dev` (or `npm start`) and open `http://localhost:<PORT>/`, then sign
 in with `ADMIN_USER`/`ADMIN_PASSWORD` (default `admin`/`admin`) at the browser prompt. Appending

@@ -1668,12 +1668,27 @@ function renderQueue() {
 async function queueAction(id, kind, body) {
   const opts = { headers: { 'x-webhook-secret': secret() } };
   let url = '/api/queue/' + id;
-  if (kind === 'run') { opts.method = 'POST'; url += '/run'; }
+  if (kind === 'run') {
+    opts.method = 'POST'; url += '/run';
+    opts.headers['Content-Type'] = 'application/json';
+    // `force` skips the rule's own condition gate — only set by "Send anyway".
+    opts.body = JSON.stringify({ force: !!(body && body.force) });
+  }
   else if (kind === 'reschedule') { opts.method = 'POST'; url += '/reschedule'; opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
   else if (kind === 'delete') { opts.method = 'DELETE'; }
   const res = await fetch(url, opts);
   const data = await res.json().catch(() => ({}));
-  if (res.ok && data.suppressed) {
+  if (res.ok && data.skipped) {
+    // The rule's own condition says no — exactly what the scheduler would decide
+    // at the due date. Show why, then let the user override deliberately.
+    const why = `Not sent — ${data.reason || "the rule's conditions do not hold."}`;
+    if (confirm(`${why}\n\nThis is what the scheduler would do at the due date, so the rule is working.\n\nSend anyway?`)) {
+      return queueAction(id, 'run', { force: true });
+    }
+    toast(`${why} Still scheduled — it will be re-checked at its due date.`, 'warn', 12000);
+    loadQueue();
+  }
+  else if (res.ok && data.suppressed) {
     // A withheld email must never read as a successful send.
     toast(`Not sent — ${data.reason || 'the recipient is opted out of email.'}`, 'warn', 9000);
     loadQueue();

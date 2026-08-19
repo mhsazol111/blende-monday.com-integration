@@ -225,10 +225,21 @@ export function registerAdmin(app: FastifyInstance, engine?: RulesEngine, store?
     const id = Number((request.params as { id?: string }).id);
     const action = store.getAction(id);
     if (!action) return reply.code(404).send({ error: 'action not found' });
+    // "Run now" answers "what would the worker do at the due date?", so it runs
+    // the SAME fire-time condition gate. Testing a rule must not silently
+    // contradict it — that made a gated x-ray reminder look broken when it was
+    // the button, not the rule, ignoring the condition. `force` is the explicit
+    // override ("Send anyway" in the UI).
+    const force = (request.body as { force?: boolean } | undefined)?.force === true;
     try {
-      // Re-render against current data (same as the worker), but skip the
-      // condition gate — "run now" is an explicit manual override.
-      const prep = await engine.prepareQueued(action, { recheckConditions: false });
+      // Re-render against current data (same as the worker).
+      const prep = await engine.prepareQueued(action, { recheckConditions: !force });
+      if (!prep.fire) {
+        // Deliberately NOT marked cancelled: the user asked to send early and we
+        // declined, so the action stays pending and still fires at its due date.
+        log.info(`Queue: action ${id} not run — ${prep.reason}`);
+        return { ok: true, skipped: true, reason: prep.reason ?? "the rule's conditions do not hold" };
+      }
       const res = await engine.dispatch(action.actionType, prep.payload, { itemId: action.itemId });
       if (res.suppressed) {
         // Not a failure — but never report it as a successful send either.
