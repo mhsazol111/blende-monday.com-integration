@@ -38,8 +38,11 @@ A single automation can have several actions with different timings — that's h
 ## Your automations at a glance
 
 1. **Unscheduled Intake — welcome drip.** When a patient enters *Unscheduled Intake*: send
-   a welcome email now, a Slack after 2 days, and another email after 3 days. If the
+   a welcome email now, then Slack the team after 2 days and again after 9 days. If the
    patient leaves the group, the not-yet-sent messages are cancelled automatically.
+   The welcome email is **skipped** for a patient whose Status is **Schedule Later** (they
+   told the form they'd book later, so "call us whenever you're ready" doesn't fit) — the
+   two Slack nudges still go out for them.
 
 2. **NP Intake — welcome + x-ray nudge.** When a patient enters *NP Intake*: send the
    welcome email and mark the "welcome email" subitem as done. Two days later, Slack a
@@ -107,13 +110,23 @@ You build and edit automations in the configurator — the web tool we set up fo
 > You pick groups, columns, and subitems **by name** from dropdowns — you never type any
 > codes or IDs.
 
-### Rule 1 — Unscheduled Intake welcome drip
+### Rule 1 — Unscheduled Intake welcome drip (two automations)
+This is two rules, because a condition applies to a whole rule — there is no way to put
+one on a single action. The email needs the condition; the Slack nudges don't.
+
+**Part A — the welcome email**
 1. New rule → Trigger **Item entered the group** → Group **Unscheduled Intake**.
-2. Actions:
-   - **Send email** (welcome) → **immediately**
+2. Condition: **Item column** → **Status** → **is not equal** → **Schedule Later**.
+3. Action: **Send email** (welcome) → **immediately**.
+
+**Part B — the staff nudges**
+1. New rule → Trigger **Item entered the group** → Group **Unscheduled Intake**.
+2. No conditions — these go out for every patient in the group.
+3. Actions:
    - **Send Slack** → **after a delay** → **2 days**
-   - **Send email** → **after a delay** → **3 days**
-3. Save. No cancel step needed — leaving the group cancels the waiting messages.
+   - **Send Slack** → **after a delay** → **9 days**
+
+Save both. No cancel step needed — leaving the group cancels the waiting messages.
 
 ### Rule 2 — NP Intake welcome + x-ray nudge (two automations)
 **Part A — the welcome**

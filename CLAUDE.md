@@ -1004,6 +1004,48 @@ x-ray action that reached its due date on its own was **sent** only for `Yes` it
     `12839620953` (X-rays `No`) → confirm dialog with the reason, decline → amber toast + row stays
     `PENDING`; "Send anyway" → bypasses the gate and reaches dispatch.
 
+**"Schedule Later" third appointment answer (2026-08-21):** the intake form's "Appointment?"
+question went from Yes/No to Yes/No/**Schedule Later** — a patient who intends to book but hasn't
+yet. They should NOT get the immediate "we know finding the right dental care can take time… call us
+whenever you're ready" welcome email, which reads wrong to someone who just said they're about to
+book. Board + form + PHP + rules; **no engine change**.
+  - **The answer had to be persisted first.** `single_selectn732562` (the form's Y/N status, still
+    titled "Single select" on the board) was read only to pick the destination group and then
+    discarded — nothing on the patient item recorded it, so no condition could see it. The WP bridge
+    now writes the item's Status as **`Schedule Later`** (label 156, added by the client) instead of
+    `Unscheduled` for that answer: `is_schedule_later()` next to `is_yes()`, and a branch in the
+    `$DEST_STATUS_COL` write at the routing block. Routing itself needed no change —
+    `is_yes()` already returns false for anything that isn't Yes, so they land in Unscheduled Intake
+    like a "No". ⚠️ **The WP page must be redeployed** (it also still carries the undeployed
+    2026-08-18 date/time-split change).
+  - **The rule had to be split, because conditions gate a whole rule, not one action.**
+    `unscheduled-intake--on-item-enter--thanks-plus-48h-72h-followup` became
+    **`…--thanks-email-unless-schedule-later`** (the immediate email + one condition
+    `column_not_equals status "Schedule Later"`) and
+    **`…--48h-9d-not-scheduled-slacks`** (both Slack nudges, no condition — the team still wants to
+    chase these patients). `config/rules.json` 28 → 29 rules.
+  - **The old rule's name was wrong and so were both docs:** actions ② and ③ are Slack at **2 days**
+    and Slack at **9 days**, not "Slack at 48h + email B at 72h". `docs/AUTOMATION-RULES.md` Rule 1
+    and `docs/CLIENT-GUIDE.md` said the latter; corrected in the same pass.
+  - **Timing note worth remembering:** this is the first rule condition that reads a column written
+    in the *same* `create_item` mutation. It works because the engine hydrates fresh rather than
+    trusting the webhook payload, but it is the one thing to watch on the first live submission.
+  - **Comparison is strict `===` on the hydrated label text** (`conditionPass`, `engine.ts`), so the
+    board label must stay exactly `Schedule Later`.
+  - **Form-side (client did these):** the third option added to `single_selectn732562`; the
+    Appointment Date + Time questions made **required**, with their show-if pinned to `Yes` only (if
+    it had been "is not empty"/"is not No", required fields would have blocked Schedule Later
+    submissions). The other two options are still labelled **`Y`/`N`** — monday's UI refuses to
+    rename a label on a column that has form submissions. Cosmetic only: `$LABEL_ALIASES` maps
+    `y`→Yes and `n`→No, so both spellings work. Renaming is possible via `update_status_column`
+    (2025-10+ API, id-pinned labels) but was deliberately **not** done — see the 2026-08-05 entry
+    for why label surgery on a live column is risky for a cosmetic gain.
+  - Verified offline against the **real** ruleset: `Schedule Later` → `matched=2`, 0 emails, 2 Slacks
+    queued; `Unscheduled` and empty → `matched=3`, the welcome email sends, same 2 Slacks.
+  - **Not yet applied to the deployed instance** — same standing caveat: production reads
+    `/app/data/rules.json` on the Coolify volume. Re-apply the ruleset there along with the
+    2026-08-04 / 08-06 / 08-17 backlog.
+
 **All offline suites pass: `npm test` → 260 checks (ingress 10, engine 117, queue 57, polish 36,
 cutover 9, admin 19, exchange 12).**
 
@@ -1197,8 +1239,10 @@ _From `npm run discover` on 2026-06-11. Use these IDs when authoring rules / fix
   `subtasks_mm1bpggv` (type `subtasks`).
 - **Status column** (parent): id `status` — **36 labels** (the 2026-06-11 note here listing four was
   already stale). The ones rules depend on: `Working on it`=0, `Done`=1, `Scheduled`=5,
-  `Unscheduled`=155, `Canceled Appointment`=18, `Missed Appointment`=157. **`Stuck` was deleted
-  2026-08-05** and replaced by the last two (see §2). Re-run `npm run discover` for the full list —
+  `Unscheduled`=155, `Canceled Appointment`=18, `Missed Appointment`=157, `Schedule Later`=156.
+  **`Stuck` was deleted 2026-08-05** and replaced by the two Appointment labels (see §2);
+  **`Schedule Later` was added by the client 2026-08-21** and is read as a rule *condition*
+  (exact, case-sensitive) — don't rename it. Re-run `npm run discover` for the full list —
   do not trust a hardcoded subset.
 - **Subitem Status column:** id `status` — verified live 2026-08-06: `Pending`=0, `Done`=1,
   `Partial`=2, `NA`=3, and a blank label=5. (The old note here said `Working on it`/`Done`/`Stuck`
@@ -1449,7 +1493,7 @@ random form (`generateRuleId()`, `web/app.js`), so rename it by hand.
 |---|---|
 | `any-group-clone-templates` | `all-groups--on-item-enter--clone-template-subitems` |
 | `any-group-move-to-column` | `all-groups--on-move-to-change--move-item-then-clear-column` |
-| `unscheduled-intake-item_entered_group-cpxpf` | `unscheduled-intake--on-item-enter--thanks-plus-48h-72h-followup` |
+| `unscheduled-intake-item_entered_group-cpxpf` | `unscheduled-intake--on-item-enter--thanks-plus-48h-72h-followup` — **split 2026-08-21** into `unscheduled-intake--on-item-enter--thanks-email-unless-schedule-later` + `unscheduled-intake--on-item-enter--48h-9d-not-scheduled-slacks` |
 | `np-intake-item_entered_group-8hr97` | `np-intake--on-item-enter--consult-invite-plus-welcome-letter-done` (was `…--consult-invite-plus-48h-xray-nudge` until 2026-08-04, when its 48h Slack moved to `np-intake--after-2d--xray-request-slack-if-patient-has-xrays`) |
 | `np-intake-item_column_changed-h2bd2` | `np-intake--on-status-canceled-or-missed--reschedule-plus-48h-72h-followup` |
 | `np-intake-item_column_changed-nv7s0` | `np-intake--on-status-scheduled--cancel-reschedule-followups` |

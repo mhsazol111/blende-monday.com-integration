@@ -134,12 +134,30 @@ Registered from **Board & connect → Connect this board**.
 
 ## 6. The rules
 
-### Rule 1 — Unscheduled Intake: welcome drip
-Enter the group → email now, Slack at 48h, email at 72h. Cancels itself if the item leaves.
+### Rule 1 — Unscheduled Intake: welcome drip (two rules)
+Enter the group → email now, Slack at 48h, Slack at 9 days. Cancels itself if the item leaves.
 
+Split in two because **conditions gate a whole rule, not one action**: the email must be
+skipped for a "Schedule Later" patient, but the staff nudges must not be.
+
+**1a — the welcome email (email A), unless Schedule Later**
 - **Trigger:** Item entered the group · **Scope:** Unscheduled Intake (`group_mm2wbwep`)
-- **Actions:** ① Send email (email A) `immediately` · ② Send Slack (notif A) `after 48 Hours` · ③ Send email (email B) `after 72 Hours`
-- No cancel rule — leaving the group auto-clears the pending 48h/72h sends.
+- **Condition:** `column_not_equals` `status` ≠ `Schedule Later`
+- **Actions:** ① Send email (email A) `immediately`
+- Rule id: `unscheduled-intake--on-item-enter--thanks-email-unless-schedule-later`
+
+**1b — the staff nudges (both patients)**
+- **Trigger:** Item entered the group · **Scope:** Unscheduled Intake (`group_mm2wbwep`)
+- **Actions:** ① Send Slack (notif A) `after 2 days` · ② Send Slack `after 9 days`
+- Rule id: `unscheduled-intake--on-item-enter--48h-9d-not-scheduled-slacks`
+- No cancel rule — leaving the group auto-clears both pending sends.
+
+**Where "Schedule Later" comes from:** the intake form's "Appointment?" question has three
+answers (Yes / N / Schedule Later). `Yes` routes to NP Intake; the other two both land in
+Unscheduled Intake, and the WP bridge writes the item's Status as `Unscheduled` or
+`Schedule Later` accordingly — that label is the only trace of the answer, which is why the
+condition reads it. The comparison is **exact and case-sensitive**, so the board label
+(index 156 on `status`) must stay spelled `Schedule Later`.
 
 ### Rule 2 — NP Intake: welcome (two rules)
 Enter the group → welcome email + mark the welcome-email subitem done. Two days later, Slack a
