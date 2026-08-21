@@ -17,11 +17,19 @@ Destination board : 18403436566  (NP - Testing)
 WHERE THE PATIENT LANDS
 --------------------------------------------------------------------------
 
-  Appointment? = Yes   ->  NP Intake            (they are already scheduled)
-  anything else        ->  Unscheduled Intake   (No, or left unanswered)
+  Appointment? = Yes              ->  NP Intake           (already scheduled)
+  Appointment? = Schedule Later   ->  Unscheduled Intake  + Status "Schedule Later"
+  anything else                   ->  Unscheduled Intake  + Status "Unscheduled"
+                                                          (No, or left unanswered)
 
 The answer alone decides this. A patient who says Yes but doesn't give a date
-still goes to NP Intake.
+still goes to NP Intake (the form now makes date + time required for Yes, so
+that should no longer happen).
+
+"Schedule Later" means the patient intends to book but hasn't yet. They wait in
+Unscheduled Intake like a "No", but the Status label suppresses the immediate
+welcome email -- see the rules doc. The staff Slack nudges at 2 and 9 days
+still go out for them.
 
 Status is set to "Unscheduled" for Unscheduled Intake patients. NP Intake
 patients are left alone — the Status column's own default on the board is
@@ -55,7 +63,8 @@ FIELD MAPPING
   (First Name + Last Name are also combined to form the item's name.)
 
   "Appointment?" is no longer copied to a column of its own — the board column
-  that held it was removed. It now only decides the destination group.
+  that held it was removed. It decides the destination group, and (for the two
+  non-Yes answers) the Status label written on the new item.
 
   "Medical conditions" is likewise no longer copied to the item; the Medical
   History column was removed from the board. The answer is still in the doc.
