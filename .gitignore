@@ -22,3 +22,8 @@ config/rules.*.json
 .DS_Store
 .vscode/
 .idea/
+
+# WordPress intake bridge — lives on the wordpress-intake-bridge branch only,
+# never on main and never in the service's Docker image.
+page-monday-intake-doc-2.php
+intake-form-field-mapping.txt
